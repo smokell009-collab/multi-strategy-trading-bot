@@ -21,7 +21,7 @@ Base organizada para um bot **multi-estratégia** em que o **Claude** (Claude De
 multi-strategy-trading-bot/
 ├── Cargo.toml / Cargo.lock              # Workspace Rust
 ├── src/main.rs                          # Bot paper executável
-├── crates/                              # Domínio, eventos, risco e execução
+├── crates/                              # Domínio, dados, estratégia, backtest, risco e execução
 ├── configs/                             # Exemplos de configuração
 ├── docs/                                # Guias, arquitetura e segurança
 ├── prompts/                             # Prompt do orquestrador
@@ -73,6 +73,18 @@ cargo test --workspace --locked
 
 A ativação grava o latch e termina. Não existe flag de desativação no bot; o rearme exige revisão humana e remoção manual do arquivo por operador autorizado. `ode-execution` cobre idempotência/reconciliação em contratos testados, mas ainda não contém adaptador de exchange nem envia ordens reais. Detalhes: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md).
 
+## Fase 3 — dados e avaliação da estratégia
+
+O bot aceita histórico OHLCV em CSV, valida preços, timestamps e cadência, mede latência quando `received_at_ms` está disponível e roda um holdout cronológico com a EMA modular. O relatório separa in-sample do trecho OOS, inclui custos, sizing pelo mesmo motor de risco, drawdown e comparação com buy-and-hold. Configure o interruptor/períodos em [`configs/strategies.example.toml`](configs/strategies.example.toml).
+
+```bash
+cargo run --release -- --backtest-csv data/BTCUSDT-1m.csv \
+  --symbol BTCUSDT --interval 1m --in-sample-ratio 0.7 \
+  --backtest-report data/backtest-report.json
+```
+
+É um **holdout simples**, não walk-forward rolling nem otimização de parâmetros; o resultado de uma amostra não comprova vantagem estatística nem rentabilidade futura. Formato CSV, pressupostos e limitações: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md).
+
 ## ⚠️ Avisos importantes
 
 - **Paper trading / testnet primeiro. Sempre.**
@@ -80,7 +92,7 @@ A ativação grava o latch e termina. Não existe flag de desativação no bot; 
 - Use keys com **permissão de saque desabilitada**.
 - LLMs podem errar, alucinar dados ou interpretar mal instruções. Mantenha supervisão humana.
 - Verifique a legislação do seu país (ex.: Polymarket tem restrições geográficas).
-- O bot Rust atual é um MVP educacional: não há backtest completo, execução real nem promessa de lucro. Saldo/posição simulados reiniciam a cada execução.
+- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução real nem promessa de lucro. Saldo/posição paper reiniciam a cada execução.
 - Resultados passados ou simulados não garantem resultados futuros.
 
 ## 📜 Créditos

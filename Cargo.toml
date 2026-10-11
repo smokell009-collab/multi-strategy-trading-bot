@@ -5,6 +5,9 @@ members = [
     "crates/ode-events",
     "crates/ode-risk",
     "crates/ode-execution",
+    "crates/ode-market-data",
+    "crates/ode-strategy-technical",
+    "crates/ode-backtest",
 ]
 resolver = "3"
 
@@ -12,7 +15,7 @@ resolver = "3"
 name = "olho-de-deus"
 version = "0.2.0"
 edition = "2024"
-description = "Bot de trading em paper mode com estratégia EMA e motor de risco independente"
+description = "Bot de trading em paper mode com replay, estratégia modular e motor de risco independente"
 license = "MIT"
 
 [[bin]]
@@ -34,6 +37,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ode-domain = { path = "crates/ode-domain" }
 ode-events = { path = "crates/ode-events" }
 ode-risk = { path = "crates/ode-risk" }
+ode-market-data = { path = "crates/ode-market-data" }
+ode-strategy-technical = { path = "crates/ode-strategy-technical" }
+ode-backtest = { path = "crates/ode-backtest" }
 
 [profile.release]
 strip = true

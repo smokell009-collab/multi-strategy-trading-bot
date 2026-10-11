@@ -31,11 +31,17 @@ macro_rules! string_id {
 string_id!(MarketId);
 string_id!(StrategyId);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candle {
     pub open_time_ms: i64,
     pub close_time_ms: i64,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
     pub close: Decimal,
+    pub volume: Decimal,
+    /// Horário local em que o candle foi recebido; `None` para histórico sem metadado.
+    pub received_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,0 +1,6 @@
+# Estratégias com implementação real nesta versão. Estratégias futuras serão adicionadas
+# como módulos independentes e terão seus próprios campos enabled e parâmetros.
+[ema_crossover]
+enabled = true
+fast_period = 9
+slow_period = 21
