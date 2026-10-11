@@ -1,0 +1,18 @@
+# Valores exclusivamente para simulação. Não constituem recomendação financeira.
+mode = "paper"
+symbol = "BTCUSDT"
+interval = "1m"
+starting_balance_usdt = "10000"
+
+# Frações decimais: 0.01 = 1%; 0.02 = 2%.
+risk_per_trade = "0.01"
+max_daily_loss = "0.02"
+max_allocation = "0.25"
+stop_loss = "0.02"
+
+# Custos simulados, em basis points (bps).
+fee_bps = 10
+slippage_bps = 5
+
+# Frequência de consulta. Dados públicos, sem API key.
+poll_seconds = 15
