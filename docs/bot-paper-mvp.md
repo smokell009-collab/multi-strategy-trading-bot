@@ -82,7 +82,7 @@ cargo run --release -- --activate-kill-switch "pausa operacional"
 
 O kill-switch é salvo atomicamente em `data/KILL_SWITCH.json`, bloqueia entradas após reinício e não fecha automaticamente uma posição aberta. Arquivo inválido/ilegível falha fechado. Não há comando de desativação: somente operador autorizado deve remover o arquivo após revisar a ocorrência e decidir o rearme.
 
-Os percentuais de risco do CLI são frações (`0.01` = 1%). Overrides TOML usam basis points (`100` = 1%); overrides por estratégia/ativo só podem apertar limites-base. A auditoria fica em `data/audit.jsonl`, em pasta ignorada pelo Git.
+Os percentuais de risco do CLI são frações (`0.01` = 1%). Overrides TOML usam basis points (`100` = 1%); overrides por estratégia/ativo só podem apertar limites-base. A perda máxima diária usa o equity persistido no começo do dia UTC, não o início do processo. Saldo, posição, stop, custos e último candle processado são restaurados do SQLite; `--starting-balance` só se aplica quando ainda não existe snapshot para o par/intervalo. Um snapshot inválido não é zerado automaticamente. A auditoria JSONL fica em `data/audit.jsonl`, em pasta ignorada pelo Git.
 
 ## Dashboard local, alertas e auditoria SQLite
 
@@ -112,7 +112,7 @@ curl -H "Authorization: Bearer $ODE_DASHBOARD_TOKEN" \
   "http://127.0.0.1:8787/api/events?limit=50"
 ```
 
-O SQLite usa WAL e sincronização full; a tabela de eventos é append-only pela API do bot. O arquivo SQLite, seus sidecars e a auditoria JSONL ficam em `data/`, ignorada pelo Git. A carteira paper, saldo e posição ainda não são restaurados após reinício; o banco atual persiste auditoria/status, não um ledger de execução.
+O SQLite usa WAL e sincronização full; a tabela de eventos é append-only pela API do bot. O snapshot paper versionado fica na tabela `paper_portfolio_state`, separado por estratégia/par/intervalo, e armazena caixa, posição, entrada, stop, custos, âncora diária UTC, último preço/sinal e candle processado. Eventos de entrada/saída e estado correspondente são confirmados na mesma transação. O cursor só avança depois do tratamento da decisão, evitando repetir entrada ou perder retomada após falha. Em reinícios, carteira salva prevalece sobre `--starting-balance`; snapshot inválido ou versão desconhecida bloqueiam a inicialização em vez de zerar a carteira. A perda diária mantém sua âncora durante reinícios e renova na virada UTC, marcada a mercado com feed válido. Bancos anteriores à migração não têm snapshot histórico: a primeira execução após a atualização inicia com o saldo configurado. O arquivo SQLite, seus sidecars e a auditoria JSONL ficam em `data/`, ignorada pelo Git.
 
 ## Comentário de IA (opt-in; sem autoridade operacional)
 
@@ -141,9 +141,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 ## Limitações e segurança
 
-Saldo e posição paper reiniciam a cada execução; o latch e a auditoria são persistentes. O sinal EMA usa edge esperado zero, não calibrado, e não representa vantagem estatística. Fills históricos e stops não reproduzem a fila de ordens, liquidez, taxas reais, funding ou latência de mercado. A métrica de recebimento só é tão confiável quanto os timestamps fornecidos. O limite de perda do processo usa o capital de início como referência; não é um ledger diário persistente.
+Saldo, posição paper, custos e cursor de candle são persistidos no SQLite; o latch e a auditoria também persistem. O sinal EMA usa edge esperado zero, não calibrado, e não representa vantagem estatística. Fills históricos e stops não reproduzem a fila de ordens, liquidez, taxas reais, funding ou latência de mercado. A métrica de recebimento só é tão confiável quanto os timestamps fornecidos. A perda diária usa início de sessão UTC e não substitui os controles de risco de uma venue.
 
-Não há execução real, adaptador de exchange, carteira persistente, futuros, DEX, integração Polymarket, notificações externas ou IA autônoma nesta fase. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
+Não há execução real habilitada nem negociação em venue nesta etapa; o adaptador de Binance Spot Testnet está sendo construído na Fase 5. Futuros, DEX, integração Polymarket, notificações externas e IA autônoma seguem fora de escopo. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
 
 ## Referência do feed
 

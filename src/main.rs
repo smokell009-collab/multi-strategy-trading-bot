@@ -3,8 +3,8 @@ use chrono::Utc;
 use clap::Parser;
 use ode_backtest::{BacktestConfig, run_out_of_sample};
 use ode_domain::{
-    Candle, DataQuality, Direction, MarketId, MarketSnapshot, PortfolioSnapshot, StrategyId,
-    TradeSignal,
+    Candle, DataQuality, Direction, MarketId, MarketSnapshot, PaperPortfolioState,
+    PortfolioSnapshot, StrategyId, TradeSignal,
 };
 use ode_events::AuditEvent;
 use ode_market_data::{DataQualityReport, read_csv, validate_candles};
@@ -53,7 +53,7 @@ struct Args {
     /// Fração do patrimônio arriscada por operação (0.01 = 1%).
     #[arg(long, default_value = "0.01")]
     risk_per_trade: Decimal,
-    /// Perda máxima diária em relação ao patrimônio no início do processo (0.02 = 2%).
+    /// Perda máxima diária em relação ao patrimônio no início do dia UTC (0.02 = 2%).
     #[arg(long, default_value = "0.02")]
     max_daily_loss: Decimal,
     /// Teto de alocação por posição (0.25 = 25%).
@@ -115,6 +115,10 @@ enum Signal {
 
 #[derive(Debug)]
 struct PaperBroker {
+    account_key: String,
+    symbol: String,
+    interval: String,
+    starting_balance: Decimal,
     cash: Decimal,
     quantity: Decimal,
     entry_price: Option<Decimal>,
@@ -122,7 +126,11 @@ struct PaperBroker {
     entry_fee: Decimal,
     entry_fee_bps: u32,
     position_slippage_bps: u32,
-    start_equity: Decimal,
+    session_start_equity: Decimal,
+    session_date_utc: String,
+    last_processed_close_ms: Option<i64>,
+    last_mark_price: Option<Decimal>,
+    last_signal: String,
     audit_path: String,
     audit_store: AuditStore,
 }
@@ -137,8 +145,54 @@ struct DashboardSnapshot<'a> {
 }
 
 impl PaperBroker {
-    fn new(balance: Decimal, audit_path: String, audit_store: AuditStore) -> Self {
-        Self {
+    fn load_or_create(
+        balance: Decimal,
+        audit_path: String,
+        audit_store: AuditStore,
+        args: &Args,
+    ) -> Result<(Self, bool)> {
+        let account_key = format!("paper:ema_crossover:{}:{}", args.symbol, args.interval);
+        if let Some(state) = audit_store
+            .load_paper_state(&account_key)
+            .context("snapshot paper inválido; recuperação bloqueada")?
+        {
+            if state.symbol != args.symbol || state.interval != args.interval {
+                bail!("snapshot paper não corresponde ao mercado/intervalo solicitado");
+            }
+            if state.starting_balance != balance {
+                warn!(persisted_balance=%state.starting_balance, requested_balance=%balance,
+                    "carteira paper existente será restaurada; --starting-balance não sobrescreve o estado persistido");
+            }
+            return Ok((
+                Self {
+                    account_key,
+                    symbol: state.symbol,
+                    interval: state.interval,
+                    starting_balance: state.starting_balance,
+                    cash: state.cash,
+                    quantity: state.quantity,
+                    entry_price: state.entry_price,
+                    stop_price: state.stop_price,
+                    entry_fee: state.entry_fee,
+                    entry_fee_bps: state.entry_fee_bps,
+                    position_slippage_bps: state.position_slippage_bps,
+                    session_start_equity: state.session_start_equity,
+                    session_date_utc: state.session_date_utc,
+                    last_processed_close_ms: state.last_processed_close_ms,
+                    last_mark_price: state.last_mark_price,
+                    last_signal: state.last_signal,
+                    audit_path,
+                    audit_store,
+                },
+                true,
+            ));
+        }
+
+        let broker = Self {
+            account_key,
+            symbol: args.symbol.clone(),
+            interval: args.interval.clone(),
+            starting_balance: balance,
             cash: balance,
             quantity: Decimal::ZERO,
             entry_price: None,
@@ -146,9 +200,52 @@ impl PaperBroker {
             entry_fee: Decimal::ZERO,
             entry_fee_bps: 0,
             position_slippage_bps: 0,
-            start_equity: balance,
+            session_start_equity: balance,
+            session_date_utc: Utc::now().date_naive().to_string(),
+            last_processed_close_ms: None,
+            last_mark_price: None,
+            last_signal: "Hold".to_owned(),
             audit_path,
             audit_store,
+        };
+        broker
+            .audit_store
+            .save_paper_state(&broker.persisted_state())
+            .context("não foi possível inicializar o snapshot paper")?;
+        Ok((broker, false))
+    }
+
+    fn persisted_state(&self) -> PaperPortfolioState {
+        PaperPortfolioState {
+            schema_version: 1,
+            account_key: self.account_key.clone(),
+            symbol: self.symbol.clone(),
+            interval: self.interval.clone(),
+            starting_balance: self.starting_balance,
+            cash: self.cash,
+            quantity: self.quantity,
+            entry_price: self.entry_price,
+            stop_price: self.stop_price,
+            entry_fee: self.entry_fee,
+            entry_fee_bps: self.entry_fee_bps,
+            position_slippage_bps: self.position_slippage_bps,
+            session_start_equity: self.session_start_equity,
+            session_date_utc: self.session_date_utc.clone(),
+            last_processed_close_ms: self.last_processed_close_ms,
+            last_mark_price: self.last_mark_price,
+            last_signal: self.last_signal.clone(),
+            updated_at_ms: Utc::now().timestamp_millis(),
+        }
+    }
+
+    fn observe_price(&mut self, price: Decimal, utc_day: &str) -> bool {
+        self.last_mark_price = Some(price);
+        if self.session_date_utc != utc_day {
+            self.session_date_utc = utc_day.to_owned();
+            self.session_start_equity = self.equity(price);
+            true
+        } else {
+            false
         }
     }
 
@@ -163,8 +260,20 @@ impl PaperBroker {
     fn record(&self, event_type: &str, market_id: &str, details: Value) -> Result<()> {
         let event = AuditEvent::new(event_type, MarketId::from(market_id), details);
         self.audit_store
+            .commit_paper_event(&event, &self.persisted_state())
+            .context("não foi possível persistir evento e carteira paper no SQLite")?;
+        self.write_jsonl(&event)
+    }
+
+    fn record_event_only(&self, event_type: &str, market_id: &str, details: Value) -> Result<()> {
+        let event = AuditEvent::new(event_type, MarketId::from(market_id), details);
+        self.audit_store
             .append_event(&event)
-            .context("não foi possível persistir evento/alerta no SQLite")?;
+            .context("não foi possível persistir evento no SQLite")?;
+        self.write_jsonl(&event)
+    }
+
+    fn write_jsonl(&self, event: &AuditEvent) -> Result<()> {
         if let Some(parent) = std::path::Path::new(&self.audit_path).parent() {
             fs::create_dir_all(parent).context("não foi possível criar a pasta de auditoria")?;
         }
@@ -187,9 +296,12 @@ impl PaperBroker {
         kill_switch_active: bool,
     ) -> Result<()> {
         let price = candle.close;
+        self.observe_price(price, &Utc::now().date_naive().to_string());
+        self.last_processed_close_ms = Some(candle.close_time_ms);
+        self.last_signal = format!("{signal:?}");
         let equity = self.equity(price);
         let stop_hit = self.stop_price.is_some_and(|stop| price <= stop);
-        self.record(
+        self.record_event_only(
             "signal_observed",
             &args.symbol,
             json!({
@@ -210,6 +322,9 @@ impl PaperBroker {
             return self.close_position(args, price, reason);
         }
         if signal != Signal::Buy {
+            self.audit_store
+                .save_paper_state(&self.persisted_state())
+                .context("não foi possível persistir cursor do candle paper")?;
             return Ok(());
         }
 
@@ -237,7 +352,7 @@ impl PaperBroker {
         let portfolio = PortfolioSnapshot {
             equity,
             cash: self.cash,
-            daily_start_equity: self.start_equity,
+            daily_start_equity: self.session_start_equity,
             open_exposure: self.quantity * price,
             has_open_position: self.has_position(),
         };
@@ -586,14 +701,15 @@ async fn main() -> Result<()> {
             args.audit_db.display()
         )
     })?;
-    let mut broker = PaperBroker::new(
+    let (mut broker, restored_state) = PaperBroker::load_or_create(
         args.starting_balance,
         "data/audit.jsonl".to_owned(),
         store.clone(),
-    );
-    let mut last_price = None;
-    let mut last_close_time = None;
-    let mut last_signal = "HOLD".to_owned();
+        &args,
+    )?;
+    let mut last_price = broker.last_mark_price;
+    let mut last_close_time = broker.last_processed_close_ms;
+    let mut last_signal = broker.last_signal.clone();
     let mut kill_alert_raised = false;
     store.update_status(&dashboard_status(
         &args,
@@ -633,9 +749,8 @@ async fn main() -> Result<()> {
             env!("CARGO_PKG_VERSION")
         ))
         .build()?;
-    let mut last_processed_close = None;
-    info!(symbol=%args.symbol, interval=%args.interval, balance=%args.starting_balance,
-        "Olho de Deus iniciado em PAPER TRADING. Execução real não está implementada.");
+    info!(symbol=%args.symbol, interval=%args.interval, balance=%broker.cash, restored_state,
+        "Olho de Deus iniciado em PAPER TRADING. Carteira/cursor persistidos; execução real não está habilitada.");
 
     loop {
         // O latch é consultado antes do fetch, portanto continua valendo mesmo com falha do feed.
@@ -661,8 +776,14 @@ async fn main() -> Result<()> {
                 info!(bars=quality.bars, p50_latency_ms=?quality.latency_p50_ms,
                     p95_latency_ms=?quality.latency_p95_ms, "qualidade do feed consultada");
                 let fresh = is_fresh(latest, &args.interval);
-                if last_processed_close != Some(latest.close_time_ms) {
-                    last_processed_close = Some(latest.close_time_ms);
+                let session_changed = fresh
+                    && broker.observe_price(latest.close, &Utc::now().date_naive().to_string());
+                let new_candle = broker.last_processed_close_ms != Some(latest.close_time_ms);
+                if session_changed && !new_candle {
+                    store.save_paper_state(&broker.persisted_state())?;
+                }
+                if new_candle {
+                    broker.last_processed_close_ms = Some(latest.close_time_ms);
                     if !fresh {
                         warn!(
                             candle_close_time_ms = latest.close_time_ms,
@@ -679,9 +800,9 @@ async fn main() -> Result<()> {
                             Direction::Sell => Signal::Sell,
                             Direction::Hold => Signal::Hold,
                         };
-                        last_signal = format!("{signal:?}");
                         broker.on_candle(&args, signal, latest, &risk_engine, kill_active)?;
                     }
+                    last_signal = broker.last_signal.clone();
                 }
                 let feed_state = if fresh { "healthy" } else { "stale" };
                 store.update_status(&dashboard_status(
@@ -747,6 +868,17 @@ mod tests {
         let id = TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!("ode-test-{}-{id}.sqlite3", std::process::id()));
         AuditStore::open(path).unwrap()
+    }
+
+    fn test_broker(args: &Args) -> PaperBroker {
+        let id = TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
+        let audit_path = env::temp_dir()
+            .join(format!("ode-test-{}-{id}.jsonl", std::process::id()))
+            .display()
+            .to_string();
+        PaperBroker::load_or_create(args.starting_balance, audit_path, test_store(), args)
+            .unwrap()
+            .0
     }
 
     fn candle(i: i64, close: Decimal) -> Candle {
@@ -817,11 +949,7 @@ mod tests {
     fn paper_risk_sizing_respects_allocation_cap() {
         let args = test_args();
         let engine = test_engine(&args);
-        let mut broker = PaperBroker::new(
-            Decimal::from(10_000),
-            "/tmp/ode-test-audit.jsonl".into(),
-            test_store(),
-        );
+        let mut broker = test_broker(&args);
         let candle = candle(1, Decimal::from(100));
         broker
             .on_candle(&args, Signal::Buy, &candle, &engine, false)
@@ -840,14 +968,64 @@ mod tests {
     }
 
     #[test]
+    fn paper_position_and_processed_candle_are_restored_after_restart() {
+        let args = test_args();
+        let id = TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
+        let db_path =
+            env::temp_dir().join(format!("ode-restart-{}-{id}.sqlite3", std::process::id()));
+        let jsonl_path =
+            env::temp_dir().join(format!("ode-restart-{}-{id}.jsonl", std::process::id()));
+        let store = AuditStore::open(&db_path).unwrap();
+        let (mut broker, restored) = PaperBroker::load_or_create(
+            args.starting_balance,
+            jsonl_path.display().to_string(),
+            store.clone(),
+            &args,
+        )
+        .unwrap();
+        assert!(!restored);
+        let engine = test_engine(&args);
+        let last_candle = candle(42, Decimal::from(100));
+        broker
+            .on_candle(&args, Signal::Buy, &last_candle, &engine, false)
+            .unwrap();
+        let saved = broker.persisted_state();
+        assert!(saved.quantity > Decimal::ZERO);
+        drop(broker);
+        drop(store);
+
+        let reopened = AuditStore::open(&db_path).unwrap();
+        let (mut broker, restored) = PaperBroker::load_or_create(
+            args.starting_balance,
+            jsonl_path.display().to_string(),
+            reopened,
+            &args,
+        )
+        .unwrap();
+        assert!(restored);
+        assert_eq!(broker.cash, saved.cash);
+        assert_eq!(broker.quantity, saved.quantity);
+        assert_eq!(broker.entry_price, saved.entry_price);
+        assert_eq!(broker.stop_price, saved.stop_price);
+        assert_eq!(broker.entry_fee_bps, saved.entry_fee_bps);
+        assert_eq!(broker.position_slippage_bps, saved.position_slippage_bps);
+        assert_eq!(
+            broker.last_processed_close_ms,
+            Some(last_candle.close_time_ms)
+        );
+        assert_eq!(broker.last_signal, "Buy");
+
+        let next_day_price = Decimal::from(110);
+        let expected_equity = broker.equity(next_day_price);
+        assert!(broker.observe_price(next_day_price, "2026-10-12"));
+        assert_eq!(broker.session_start_equity, expected_equity);
+    }
+
+    #[test]
     fn daily_loss_gate_blocks_new_entries() {
         let args = test_args();
         let engine = test_engine(&args);
-        let mut broker = PaperBroker::new(
-            Decimal::from(10_000),
-            "/tmp/ode-test-audit.jsonl".into(),
-            test_store(),
-        );
+        let mut broker = test_broker(&args);
         broker.cash = Decimal::from(9_700);
         broker
             .on_candle(
@@ -865,11 +1043,7 @@ mod tests {
     fn persistent_kill_switch_blocks_new_entries() {
         let args = test_args();
         let engine = test_engine(&args);
-        let mut broker = PaperBroker::new(
-            Decimal::from(10_000),
-            "/tmp/ode-test-audit.jsonl".into(),
-            test_store(),
-        );
+        let mut broker = test_broker(&args);
         broker
             .on_candle(
                 &args,
