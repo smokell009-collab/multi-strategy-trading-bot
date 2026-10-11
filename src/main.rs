@@ -8,16 +8,21 @@ use ode_domain::{
 };
 use ode_events::AuditEvent;
 use ode_market_data::{DataQualityReport, read_csv, validate_candles};
+use ode_model_adapter::OpenAiCompatibleAdapter;
+use ode_observability::{AuditStore, BotStatus, spawn_dashboard};
 use ode_risk::{KillSwitch, RiskEngine, RiskInput, RiskLimits, RiskPolicy};
 use ode_strategy_technical::{EmaCrossover, StrategiesConfig, Strategy};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::{
+    env,
     fs::{self, File, OpenOptions},
     io::Write,
+    net::SocketAddr,
     path::PathBuf,
     str::FromStr,
+    sync::Arc,
     time::Duration,
 };
 use tokio::time::sleep;
@@ -75,6 +80,18 @@ struct Args {
     /// Caminho opcional para gravar o relatório JSON além de imprimi-lo no stdout.
     #[arg(long)]
     backtest_report: Option<PathBuf>,
+    /// Banco SQLite persistente de auditoria consultável.
+    #[arg(long, default_value = "data/olho.sqlite3")]
+    audit_db: PathBuf,
+    /// Inicia dashboard local autenticado (somente no loop paper, não com --once/backtest).
+    #[arg(long, default_value_t = false)]
+    dashboard: bool,
+    /// Bind do dashboard; somente loopback é permitido nesta fase.
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    dashboard_bind: SocketAddr,
+    /// Habilita comentário de IA opt-in e acionado manualmente no dashboard; sem ferramentas.
+    #[arg(long, default_value_t = false)]
+    enable_ai_advisory: bool,
     /// Arquivo TOML com overrides por estratégia e por ativo.
     #[arg(long, default_value = "configs/risk-overrides.example.toml")]
     risk_overrides: PathBuf,
@@ -107,10 +124,20 @@ struct PaperBroker {
     position_slippage_bps: u32,
     start_equity: Decimal,
     audit_path: String,
+    audit_store: AuditStore,
+}
+
+struct DashboardSnapshot<'a> {
+    feed_state: &'a str,
+    last_price: Option<Decimal>,
+    last_candle_close_ms: Option<i64>,
+    last_signal: &'a str,
+    kill_switch_active: bool,
+    quality: Option<&'a DataQualityReport>,
 }
 
 impl PaperBroker {
-    fn new(balance: Decimal, audit_path: String) -> Self {
+    fn new(balance: Decimal, audit_path: String, audit_store: AuditStore) -> Self {
         Self {
             cash: balance,
             quantity: Decimal::ZERO,
@@ -121,6 +148,7 @@ impl PaperBroker {
             position_slippage_bps: 0,
             start_equity: balance,
             audit_path,
+            audit_store,
         }
     }
 
@@ -134,6 +162,9 @@ impl PaperBroker {
 
     fn record(&self, event_type: &str, market_id: &str, details: Value) -> Result<()> {
         let event = AuditEvent::new(event_type, MarketId::from(market_id), details);
+        self.audit_store
+            .append_event(&event)
+            .context("não foi possível persistir evento/alerta no SQLite")?;
         if let Some(parent) = std::path::Path::new(&self.audit_path).parent() {
             fs::create_dir_all(parent).context("não foi possível criar a pasta de auditoria")?;
         }
@@ -318,6 +349,19 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.in_sample_ratio < Decimal::new(5, 1) || args.in_sample_ratio > Decimal::new(9, 1) {
         bail!("in-sample-ratio deve estar entre 0.5 e 0.9");
     }
+    if args.dashboard && (args.once || args.backtest_csv.is_some()) {
+        bail!(
+            "--dashboard requer loop paper contínuo; não pode ser usado com --once ou --backtest-csv"
+        );
+    }
+    if args.dashboard && !args.dashboard_bind.ip().is_loopback() {
+        bail!("dashboard aceita somente endereço loopback (127.0.0.1 ou ::1)");
+    }
+    if args.enable_ai_advisory && !args.dashboard {
+        bail!(
+            "--enable-ai-advisory requer --dashboard e só executa após solicitação manual autenticada"
+        );
+    }
     Ok(())
 }
 
@@ -439,6 +483,34 @@ fn is_fresh(candle: &Candle, interval: &str) -> bool {
         <= period_ms.saturating_mul(2)
 }
 
+fn dashboard_status(
+    args: &Args,
+    broker: &PaperBroker,
+    snapshot: &DashboardSnapshot<'_>,
+) -> BotStatus {
+    let mark_price = snapshot
+        .last_price
+        .or(broker.entry_price)
+        .unwrap_or(Decimal::ZERO);
+    BotStatus {
+        mode: "paper".to_owned(),
+        updated_at: Utc::now().to_rfc3339(),
+        symbol: args.symbol.clone(),
+        interval: args.interval.clone(),
+        feed_state: snapshot.feed_state.to_owned(),
+        last_price: snapshot.last_price.map(|price| price.to_string()),
+        last_candle_close_ms: snapshot.last_candle_close_ms,
+        last_signal: snapshot.last_signal.to_owned(),
+        equity: broker.equity(mark_price).to_string(),
+        cash: broker.cash.to_string(),
+        quantity: broker.quantity.to_string(),
+        has_position: broker.has_position(),
+        kill_switch_active: snapshot.kill_switch_active,
+        latency_p50_ms: snapshot.quality.and_then(|report| report.latency_p50_ms),
+        latency_p95_ms: snapshot.quality.and_then(|report| report.latency_p95_ms),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -508,6 +580,51 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let risk_engine = risk_engine(&args, policy)?;
+    let store = AuditStore::open(&args.audit_db).with_context(|| {
+        format!(
+            "não foi possível abrir auditoria SQLite em {}",
+            args.audit_db.display()
+        )
+    })?;
+    let mut broker = PaperBroker::new(
+        args.starting_balance,
+        "data/audit.jsonl".to_owned(),
+        store.clone(),
+    );
+    let mut last_price = None;
+    let mut last_close_time = None;
+    let mut last_signal = "HOLD".to_owned();
+    let mut kill_alert_raised = false;
+    store.update_status(&dashboard_status(
+        &args,
+        &broker,
+        &DashboardSnapshot {
+            feed_state: "starting",
+            last_price: None,
+            last_candle_close_ms: None,
+            last_signal: &last_signal,
+            kill_switch_active: false,
+            quality: None,
+        },
+    ))?;
+
+    let advisor = if args.enable_ai_advisory {
+        Some(Arc::new(OpenAiCompatibleAdapter::from_env()?))
+    } else {
+        None
+    };
+    if args.dashboard {
+        let token = env::var("ODE_DASHBOARD_TOKEN")
+            .context("--dashboard exige ODE_DASHBOARD_TOKEN (mínimo 32 caracteres aleatórios)")?;
+        let dashboard_task =
+            spawn_dashboard(args.dashboard_bind, store.clone(), token, advisor.clone())
+                .await
+                .context("não foi possível iniciar dashboard local autenticado")?;
+        drop(dashboard_task);
+        info!(address=%args.dashboard_bind, ai_advisory=advisor.is_some(),
+            "dashboard local iniciado; API exige bearer token e não possui rotas de ordens");
+    }
+
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(concat!(
@@ -516,28 +633,37 @@ async fn main() -> Result<()> {
             env!("CARGO_PKG_VERSION")
         ))
         .build()?;
-    let mut broker = PaperBroker::new(args.starting_balance, "data/audit.jsonl".to_owned());
     let mut last_processed_close = None;
     info!(symbol=%args.symbol, interval=%args.interval, balance=%args.starting_balance,
         "Olho de Deus iniciado em PAPER TRADING. Execução real não está implementada.");
 
     loop {
+        // O latch é consultado antes do fetch, portanto continua valendo mesmo com falha do feed.
+        let kill_active = kill_switch
+            .is_active()
+            .context("estado do kill-switch incerto; fail-closed")?;
+        if kill_active {
+            warn!(path=%kill_switch.path().display(), "kill-switch persistente ativo; entradas bloqueadas");
+            if !kill_alert_raised {
+                broker.record(
+                    "kill_switch_active",
+                    &args.symbol,
+                    json!({"kill_switch_file":kill_switch.path().display().to_string()}),
+                )?;
+                kill_alert_raised = true;
+            }
+        }
         match fetch_candles(&client, &args, strategy.min_history_len()).await {
             Ok((candles, quality)) => {
                 let latest = candles.last().expect("fetch valida candles não vazios");
+                last_price = Some(latest.close);
+                last_close_time = Some(latest.close_time_ms);
                 info!(bars=quality.bars, p50_latency_ms=?quality.latency_p50_ms,
                     p95_latency_ms=?quality.latency_p95_ms, "qualidade do feed consultada");
-                // Consultar o latch em todo ciclo, mesmo quando ainda não há candle novo.
-                // Um arquivo ilegível/corrompido interrompe o processo: fail-closed.
-                let kill_active = kill_switch
-                    .is_active()
-                    .context("estado do kill-switch incerto; fail-closed")?;
-                if kill_active {
-                    warn!(path=%kill_switch.path().display(), "kill-switch persistente ativo; entradas bloqueadas");
-                }
+                let fresh = is_fresh(latest, &args.interval);
                 if last_processed_close != Some(latest.close_time_ms) {
                     last_processed_close = Some(latest.close_time_ms);
-                    if !is_fresh(latest, &args.interval) {
+                    if !fresh {
                         warn!(
                             candle_close_time_ms = latest.close_time_ms,
                             "dados atrasados; nenhuma decisão será autorizada"
@@ -553,9 +679,23 @@ async fn main() -> Result<()> {
                             Direction::Sell => Signal::Sell,
                             Direction::Hold => Signal::Hold,
                         };
+                        last_signal = format!("{signal:?}");
                         broker.on_candle(&args, signal, latest, &risk_engine, kill_active)?;
                     }
                 }
+                let feed_state = if fresh { "healthy" } else { "stale" };
+                store.update_status(&dashboard_status(
+                    &args,
+                    &broker,
+                    &DashboardSnapshot {
+                        feed_state,
+                        last_price,
+                        last_candle_close_ms: last_close_time,
+                        last_signal: &last_signal,
+                        kill_switch_active: kill_active,
+                        quality: Some(&quality),
+                    },
+                ))?;
                 info!(close=%latest.close, equity=%broker.equity(latest.close), has_position=broker.has_position(),
                     "estado paper atualizado");
             }
@@ -566,6 +706,18 @@ async fn main() -> Result<()> {
                     &args.symbol,
                     json!({"error":err.to_string()}),
                 )?;
+                store.update_status(&dashboard_status(
+                    &args,
+                    &broker,
+                    &DashboardSnapshot {
+                        feed_state: "error",
+                        last_price,
+                        last_candle_close_ms: last_close_time,
+                        last_signal: &last_signal,
+                        kill_switch_active: kill_active,
+                        quality: None,
+                    },
+                ))?;
             }
         }
         if args.once {
@@ -587,6 +739,15 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_STORE_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn test_store() -> AuditStore {
+        let id = TEST_STORE_ID.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!("ode-test-{}-{id}.sqlite3", std::process::id()));
+        AuditStore::open(path).unwrap()
+    }
 
     fn candle(i: i64, close: Decimal) -> Candle {
         let now = Utc::now().timestamp_millis();
@@ -618,6 +779,10 @@ mod tests {
             backtest_csv: None,
             in_sample_ratio: Decimal::new(7, 1),
             backtest_report: None,
+            audit_db: PathBuf::from("data/test-olho.sqlite3"),
+            dashboard: false,
+            dashboard_bind: "127.0.0.1:8787".parse().unwrap(),
+            enable_ai_advisory: false,
             risk_overrides: PathBuf::from("configs/risk-overrides.example.toml"),
             kill_switch_file: PathBuf::from("data/KILL_SWITCH.json"),
             activate_kill_switch: None,
@@ -652,8 +817,11 @@ mod tests {
     fn paper_risk_sizing_respects_allocation_cap() {
         let args = test_args();
         let engine = test_engine(&args);
-        let mut broker =
-            PaperBroker::new(Decimal::from(10_000), "/tmp/ode-test-audit.jsonl".into());
+        let mut broker = PaperBroker::new(
+            Decimal::from(10_000),
+            "/tmp/ode-test-audit.jsonl".into(),
+            test_store(),
+        );
         let candle = candle(1, Decimal::from(100));
         broker
             .on_candle(&args, Signal::Buy, &candle, &engine, false)
@@ -675,8 +843,11 @@ mod tests {
     fn daily_loss_gate_blocks_new_entries() {
         let args = test_args();
         let engine = test_engine(&args);
-        let mut broker =
-            PaperBroker::new(Decimal::from(10_000), "/tmp/ode-test-audit.jsonl".into());
+        let mut broker = PaperBroker::new(
+            Decimal::from(10_000),
+            "/tmp/ode-test-audit.jsonl".into(),
+            test_store(),
+        );
         broker.cash = Decimal::from(9_700);
         broker
             .on_candle(
@@ -694,8 +865,11 @@ mod tests {
     fn persistent_kill_switch_blocks_new_entries() {
         let args = test_args();
         let engine = test_engine(&args);
-        let mut broker =
-            PaperBroker::new(Decimal::from(10_000), "/tmp/ode-test-audit.jsonl".into());
+        let mut broker = PaperBroker::new(
+            Decimal::from(10_000),
+            "/tmp/ode-test-audit.jsonl".into(),
+            test_store(),
+        );
         broker
             .on_candle(
                 &args,
@@ -713,5 +887,19 @@ mod tests {
         let mut args = test_args();
         args.interval = "9m".into();
         assert!(validate_args(&args).is_err());
+    }
+
+    #[test]
+    fn dashboard_and_ai_require_safe_opt_in_configuration() {
+        let mut args = test_args();
+        args.dashboard = true;
+        assert!(validate_args(&args).is_err()); // --once não pode manter o servidor
+        args.once = false;
+        args.dashboard_bind = "0.0.0.0:8787".parse().unwrap();
+        assert!(validate_args(&args).is_err()); // rede pública é proibida
+        args.dashboard_bind = "127.0.0.1:8787".parse().unwrap();
+        args.dashboard = false;
+        args.enable_ai_advisory = true;
+        assert!(validate_args(&args).is_err()); // IA exige dashboard autenticado
     }
 }

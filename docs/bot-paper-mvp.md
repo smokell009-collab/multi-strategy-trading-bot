@@ -9,6 +9,9 @@
 - Paper broker long-only com sizing autorizado por `ode-risk`, custos simulados, stop e auditoria JSONL. Nenhuma ordem real é enviada.
 - Backtest reproduzível a partir de CSV com fills na abertura seguinte, stop intrabar baseado em OHLC, taxas/slippage e o mesmo motor de risco.
 - Relatório de holdout cronológico com métricas in-sample e fora da amostra: retorno, número de operações, entradas rejeitadas por risco, taxa de acerto, expectativa, fator de lucro, drawdown e diferença para buy-and-hold.
+- Auditoria JSONL e SQLite persistente (`data/olho.sqlite3`), com APIs locais autenticadas para status, eventos e alertas.
+- Dashboard local de paper trading com estado do feed, latência, posição paper e alertas reconhecíveis.
+- Adaptador de comentário de IA OpenAI-compatible, opcional e manual; somente contexto público de mercado é enviado e a resposta não é executável pelo bot.
 
 ## Estratégia e switch próprio
 
@@ -81,9 +84,54 @@ O kill-switch é salvo atomicamente em `data/KILL_SWITCH.json`, bloqueia entrada
 
 Os percentuais de risco do CLI são frações (`0.01` = 1%). Overrides TOML usam basis points (`100` = 1%); overrides por estratégia/ativo só podem apertar limites-base. A auditoria fica em `data/audit.jsonl`, em pasta ignorada pelo Git.
 
+## Dashboard local, alertas e auditoria SQLite
+
+O dashboard só é iniciado com `--dashboard`, em loop paper contínuo (não use `--once` nem backtest). Gere um token fora do repositório; o mínimo é 32 caracteres ASCII sem espaços:
+
+```bash
+export ODE_DASHBOARD_TOKEN="$(openssl rand -hex 32)"
+cargo run --release -- --dashboard --symbol BTCUSDT --interval 1m \
+  --audit-db data/olho.sqlite3
+```
+
+Abra `http://127.0.0.1:8787` e informe o token. O bind é validado como loopback no CLI e no crate do servidor. A página não carrega scripts/CDNs externos; APIs exigem `Authorization: Bearer`, não há CORS habilitado e respostas usam `no-store`, CSP e `X-Content-Type-Options`. O token nunca é colocado na URL ou no log e fica em `sessionStorage` somente para a aba atual. Não publique o servidor em `0.0.0.0` nem encaminhe a porta.
+
+O painel consulta status, eventos e alertas a cada 10 segundos. Alertas de feed são deduplicados, contam ocorrências e resolvem quando o feed volta a saudável; reconhecimento não equivale a resolução. As rotas de API são:
+
+- `GET /api/status`: último snapshot paper e saúde do feed.
+- `GET /api/events?limit=50&event_type=market_data_error&since=<RFC3339>`: auditoria consultável; `limit` é limitado a 500.
+- `GET /api/alerts?limit=50&active_only=true`: alertas recentes/ativos.
+- `POST /api/alerts/{id}/ack`: reconhece um alerta, sem afetar o bot.
+- `GET /api/capabilities`: informa se o comentário de IA foi habilitado.
+- `POST /api/advisory`: solicita comentário somente se a IA foi habilitada, o feed está saudável e o snapshot tem até 60 segundos; há intervalo mínimo de 30 segundos.
+
+Exemplo de consulta sem expor o token em URL:
+
+```bash
+curl -H "Authorization: Bearer $ODE_DASHBOARD_TOKEN" \
+  "http://127.0.0.1:8787/api/events?limit=50"
+```
+
+O SQLite usa WAL e sincronização full; a tabela de eventos é append-only pela API do bot. O arquivo SQLite, seus sidecars e a auditoria JSONL ficam em `data/`, ignorada pelo Git. A carteira paper, saldo e posição ainda não são restaurados após reinício; o banco atual persiste auditoria/status, não um ledger de execução.
+
+## Comentário de IA (opt-in; sem autoridade operacional)
+
+Não há chamada a modelo por padrão. Para habilitar o botão de comentário, exporte credencial diretamente no ambiente (nunca a versione) e inicie o dashboard com `--enable-ai-advisory`:
+
+```bash
+export ODE_DASHBOARD_TOKEN="$(openssl rand -hex 32)"
+export ODE_MODEL_API_KEY="<chave do seu provedor>"
+# ODE_MODEL_BASE_URL padrão: https://api.openai.com/v1
+# ODE_MODEL_NAME padrão: gpt-4o-mini
+cargo run --release -- --dashboard --enable-ai-advisory \
+  --symbol BTCUSDT --interval 1m
+```
+
+O botão só envia uma solicitação após ação manual autenticada. O adaptador aceita apenas mercado, intervalo, último preço público, último sinal, estado do feed e timestamp do candle; não recebe portfólio, saldo, ordens ou credenciais. Fora de loopback, a URL do provedor precisa usar HTTPS; redirects HTTP são desabilitados. Não há tool calling. A resposta é texto de comentário, limitada em tamanho, exibida como texto (não HTML), registrada no log apenas como metadados (modelo/provedor/tamanho) e não entra em `ode-risk`/`ode-execution`. Trate qualquer comentário como potencialmente incorreto; ele não é recomendação nem sinal executável.
+
 ## Arquitetura e testes
 
-Crates: `ode-domain` (tipos), `ode-market-data` (CSV, integridade e latência), `ode-strategy-technical` (EMA modular), `ode-backtest` (replay/holdout), `ode-events` (auditoria), `ode-risk` (autorização independente) e `ode-execution` (contratos de idempotência/reconciliação, ainda sem adaptador de venue).
+Crates: `ode-domain` (tipos), `ode-market-data` (CSV, integridade e latência), `ode-strategy-technical` (EMA modular), `ode-backtest` (replay/holdout), `ode-events` (auditoria), `ode-risk` (autorização independente), `ode-execution` (contratos de idempotência/reconciliação, ainda sem adaptador de venue), `ode-observability` (SQLite/API/dashboard) e `ode-model-adapter` (comentário read-only opt-in).
 
 ```bash
 cargo fmt --all -- --check
@@ -95,7 +143,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 Saldo e posição paper reiniciam a cada execução; o latch e a auditoria são persistentes. O sinal EMA usa edge esperado zero, não calibrado, e não representa vantagem estatística. Fills históricos e stops não reproduzem a fila de ordens, liquidez, taxas reais, funding ou latência de mercado. A métrica de recebimento só é tão confiável quanto os timestamps fornecidos. O limite de perda do processo usa o capital de início como referência; não é um ledger diário persistente.
 
-Não há execução real, adaptador de exchange, painel, carteira persistente, futuros, DEX, integração Polymarket ou IA nesta fase. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
+Não há execução real, adaptador de exchange, carteira persistente, futuros, DEX, integração Polymarket, notificações externas ou IA autônoma nesta fase. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
 
 ## Referência do feed
 

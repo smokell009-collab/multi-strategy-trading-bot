@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Olho de Deus — Observabilidade</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PAPER TRADING · SOMENTE LEITURA</p>
+        <h1>Olho de Deus</h1>
+      </div>
+      <span id="connection" class="badge">Desconectado</span>
+    </header>
+
+    <section class="panel auth-panel">
+      <label for="token">Token local do dashboard</label>
+      <div class="auth-row">
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="ODE_DASHBOARD_TOKEN">
+        <button id="connect">Conectar</button>
+        <button id="disconnect" class="secondary">Desconectar</button>
+      </div>
+      <p class="muted">O token fica apenas no sessionStorage desta aba. Não compartilhe o endereço ou token.</p>
+    </section>
+
+    <section class="grid" aria-label="Estado do bot">
+      <article class="metric"><span>Mercado</span><strong id="market">—</strong><small id="interval">—</small></article>
+      <article class="metric"><span>Feed</span><strong id="feed" class="status">—</strong><small id="updated">—</small></article>
+      <article class="metric"><span>Último preço</span><strong id="price">—</strong><small id="candle-time">—</small></article>
+      <article class="metric"><span>Equity paper</span><strong id="equity">—</strong><small id="cash">—</small></article>
+      <article class="metric"><span>Posição</span><strong id="position">—</strong><small id="quantity">—</small></article>
+      <article class="metric"><span>Estratégia / latch</span><strong id="signal">—</strong><small id="kill-switch">—</small></article>
+      <article class="metric"><span>Latência do feed</span><strong id="latency">—</strong><small>p50 / p95 · milissegundos</small></article>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><p class="eyebrow">SEGURANÇA OPERACIONAL</p><h2>Alertas</h2></div><button id="refresh" class="secondary">Atualizar</button></div>
+      <div id="alerts" class="empty">Conecte-se para consultar alertas.</div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head"><div><p class="eyebrow">AUDITORIA PERSISTENTE</p><h2>Eventos recentes</h2></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Horário</th><th>Evento</th><th>Mercado</th><th>Detalhes</th></tr></thead><tbody id="events"><tr><td colspan="4" class="empty">Conecte-se para consultar eventos.</td></tr></tbody></table></div>
+    </section>
+
+    <section id="advisory-panel" class="panel advisory hidden">
+      <div class="section-head"><div><p class="eyebrow">OPCIONAL · CONSULTA MANUAL</p><h2>Comentário de IA read-only</h2></div><button id="analyze">Gerar comentário</button></div>
+      <p class="muted">Ao clicar, somente um snapshot público (mercado, intervalo, preço, sinal e estado do feed) é enviado ao provedor configurado. Saldo, posição, chaves e ordens não são enviados. Texto consultivo: não é executado pelo bot nem altera gates de risco.</p>
+      <pre id="advisory-result" class="advisory-result">Nenhum comentário gerado.</pre>
+    </section>
+
+    <footer>Localhost · API autenticada · sem rotas de execução de ordens</footer>
+  </main>
+</body>
+</html>

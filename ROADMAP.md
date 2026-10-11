@@ -30,8 +30,11 @@
 
 ## Fase 4 — observabilidade e IA
 
-- [ ] Dashboard, alertas, auditoria persistente consultável e autenticação.
-- [ ] Adaptadores de modelos com permissões limitadas; IA nunca controla os gates de risco.
+- [x] Dashboard local autenticado em loopback, estado paper/saúde/latência, alertas deduplicados e reconhecíveis.
+- [x] Auditoria persistente e consultável em SQLite com JSONL mantido para compatibilidade.
+- [x] Adaptador OpenAI-compatible opt-in, acionado manualmente, sem tool calling e com contexto público tipado; sem dependência de `ode-risk`/`ode-execution`.
+
+**Limites:** o painel não é exposto à rede e não envia push/webhook; polling do navegador é local. O adaptador retorna apenas comentário textual e não controla sinais, risco ou execução. Carteira paper continua reiniciando a cada processo; execução real permanece fora de escopo.
 
 ## Fase 5 — integração de execução (não implementada)
 

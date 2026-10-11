@@ -85,6 +85,24 @@ cargo run --release -- --backtest-csv data/BTCUSDT-1m.csv \
 
 É um **holdout simples**, não walk-forward rolling nem otimização de parâmetros; o resultado de uma amostra não comprova vantagem estatística nem rentabilidade futura. Formato CSV, pressupostos e limitações: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md).
 
+## Fase 4 — observabilidade local e comentário de IA opcional
+
+O loop paper persiste eventos em SQLite (`data/olho.sqlite3`) e mantém a cópia JSONL. Para abrir o dashboard, gere um token local de pelo menos 32 caracteres e inicie o bot em loop contínuo:
+
+```bash
+export ODE_DASHBOARD_TOKEN="$(openssl rand -hex 32)"
+cargo run --release -- --dashboard --symbol BTCUSDT --interval 1m
+```
+
+Acesse `http://127.0.0.1:8787` e informe o token. O servidor só aceita bind em loopback; todas as APIs de dados exigem `Authorization: Bearer ...`. O painel exibe status paper, latência, alertas (com reconhecimento) e eventos recentes. Exemplo de consulta:
+
+```bash
+curl -H "Authorization: Bearer $ODE_DASHBOARD_TOKEN" \
+  "http://127.0.0.1:8787/api/events?limit=50&event_type=market_data_error"
+```
+
+O adaptador de modelo é desligado por padrão. Para habilitá-lo, configure `ODE_MODEL_API_KEY` (e, se necessário, `ODE_MODEL_BASE_URL`/`ODE_MODEL_NAME`) e acrescente `--enable-ai-advisory`. A chamada só acontece quando solicitada manualmente na interface autenticada; o provedor recebe exclusivamente mercado, intervalo, preço, último sinal e saúde do feed. Não recebe saldo, posição, credenciais ou ordens; não tem ferramentas nem rota para controlar risco/execução. O resultado é texto consultivo e não é executado pelo bot. Consulte [o guia de operação](docs/bot-paper-mvp.md) para limites e segurança.
+
 ## ⚠️ Avisos importantes
 
 - **Paper trading / testnet primeiro. Sempre.**
@@ -92,7 +110,7 @@ cargo run --release -- --backtest-csv data/BTCUSDT-1m.csv \
 - Use keys com **permissão de saque desabilitada**.
 - LLMs podem errar, alucinar dados ou interpretar mal instruções. Mantenha supervisão humana.
 - Verifique a legislação do seu país (ex.: Polymarket tem restrições geográficas).
-- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução real nem promessa de lucro. Saldo/posição paper reiniciam a cada execução.
+- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução real nem promessa de lucro. Saldo/posição paper reiniciam a cada execução. O dashboard é local e não envia notificações externas.
 - Resultados passados ou simulados não garantem resultados futuros.
 
 ## 📜 Créditos
