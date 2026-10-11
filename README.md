@@ -66,6 +66,8 @@ Para executar em loop, remova `--once`. O guia completo está em [`docs/bot-pape
 
 O workspace separa os contratos em `crates/ode-domain`, `crates/ode-events`, `crates/ode-risk` e `crates/ode-execution`. O motor valida qualidade/idade de dados, validade do sinal, edge mínimo, slippage, posição aberta, perda diária, saldo e sizing; overrides por ativo/estratégia só podem **apertar** os limites-base. O kill-switch fica persistido em `data/KILL_SWITCH.json` e bloqueia entradas também após reinício.
 
+Na autorização de risco, `MarketId` é comparado após `trim` e conversão ASCII para maiúsculas. Para ativos de venues diferentes, use identificadores explícitos como `BINANCE:BTCUSDT` e `COINBASE:BTCUSDT`; o legado `BTCUSDT` continua aceito, mas não contém identificação de venue. A normalização não cria aliases nem prova que um símbolo existe. Detalhes e limitações: [`docs/phase-b1-market-identity.md`](docs/phase-b1-market-identity.md).
+
 ```bash
 cargo run --release -- --activate-kill-switch "pausa operacional"
 cargo test --workspace --locked

@@ -32,6 +32,24 @@ macro_rules! string_id {
 string_id!(MarketId);
 string_id!(StrategyId);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum MarketIdError {
+    #[error("market_id não pode ser vazio após normalização")]
+    Empty,
+}
+
+impl MarketId {
+    /// Normaliza somente espaços externos e caixa ASCII.
+    /// Não infere venues, aliases, moedas ou equivalência entre símbolos.
+    pub fn canonicalized(&self) -> Result<Self, MarketIdError> {
+        let normalized = self.0.trim().to_ascii_uppercase();
+        if normalized.is_empty() {
+            return Err(MarketIdError::Empty);
+        }
+        Ok(Self(normalized))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candle {
     pub open_time_ms: i64,
@@ -97,7 +115,7 @@ impl TradeSignal {
         if self.strategy_id.0.trim().is_empty() {
             return Err(SignalValidationError::EmptyStrategyId);
         }
-        if self.market_id.0.trim().is_empty() {
+        if self.market_id.canonicalized().is_err() {
             return Err(SignalValidationError::EmptyMarketId);
         }
         if self
@@ -229,6 +247,28 @@ mod tests {
         assert_eq!(
             invalid_expiry.validate_shape(),
             Err(SignalValidationError::InvalidExpiry)
+        );
+    }
+
+    #[test]
+    fn market_id_canonicalization_trims_and_normalizes_ascii_case_without_aliasing_venues() {
+        let mixed_case = MarketId::from("  binance:btcusdt  ");
+        let upper_case = MarketId::from("BINANCE:BTCUSDT");
+        assert_eq!(mixed_case.canonicalized().unwrap(), upper_case);
+
+        let other_venue = MarketId::from("COINBASE:BTCUSDT");
+        assert_ne!(mixed_case.canonicalized().unwrap(), other_venue);
+
+        let unqualified = MarketId::from("BTCUSDT");
+        assert_ne!(mixed_case.canonicalized().unwrap(), unqualified);
+        assert_eq!(unqualified.canonicalized().unwrap(), unqualified);
+    }
+
+    #[test]
+    fn market_id_canonicalization_rejects_empty_values() {
+        assert_eq!(
+            MarketId::from(" \t ").canonicalized(),
+            Err(MarketIdError::Empty)
         );
     }
 }

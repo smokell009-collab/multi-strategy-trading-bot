@@ -1,4 +1,6 @@
-use ode_domain::{DataQuality, Direction, MarketSnapshot, PortfolioSnapshot, TradeSignal};
+use ode_domain::{
+    DataQuality, Direction, MarketId, MarketSnapshot, PortfolioSnapshot, TradeSignal,
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -113,7 +115,29 @@ pub struct RiskOverrides {
 
 impl RiskPolicy {
     pub fn from_toml(input: &str) -> Result<Self, RiskError> {
-        Ok(toml::from_str(input)?)
+        let mut policy: Self = toml::from_str(input)?;
+        policy.canonicalize_market_keys()?;
+        Ok(policy)
+    }
+
+    fn canonicalize_market_keys(&mut self) -> Result<(), RiskError> {
+        let mut normalized_markets = BTreeMap::new();
+        for (market_id, overrides) in std::mem::take(&mut self.markets) {
+            let canonical_id = MarketId::from(market_id)
+                .canonicalized()
+                .map_err(|error| RiskError::InvalidPolicy(error.to_string()))?
+                .0;
+            if normalized_markets
+                .insert(canonical_id.clone(), overrides)
+                .is_some()
+            {
+                return Err(RiskError::InvalidPolicy(format!(
+                    "chaves de mercado duplicadas após canonicalização: {canonical_id}"
+                )));
+            }
+        }
+        self.markets = normalized_markets;
+        Ok(())
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, RiskError> {
@@ -175,8 +199,9 @@ pub struct RiskEngine {
 }
 
 impl RiskEngine {
-    pub fn new(base_limits: RiskLimits, policy: RiskPolicy) -> Result<Self, RiskError> {
+    pub fn new(base_limits: RiskLimits, mut policy: RiskPolicy) -> Result<Self, RiskError> {
         base_limits.validate()?;
+        policy.canonicalize_market_keys()?;
         Ok(Self {
             base_limits,
             policy,
@@ -193,7 +218,17 @@ impl RiskEngine {
         if input.signal.direction != Direction::Buy {
             return Err(RiskRejection::NotAnEntrySignal);
         }
-        if input.signal.market_id != input.market.market_id {
+        let signal_market_id = input
+            .signal
+            .market_id
+            .canonicalized()
+            .map_err(|_| RiskRejection::InvalidSignal)?;
+        let snapshot_market_id = input
+            .market
+            .market_id
+            .canonicalized()
+            .map_err(|_| RiskRejection::InvalidMarketData)?;
+        if signal_market_id != snapshot_market_id {
             return Err(RiskRejection::MarketMismatch);
         }
         if input.market.quality != DataQuality::Valid {
@@ -204,7 +239,7 @@ impl RiskEngine {
             .limits_for(
                 &self.base_limits,
                 &input.signal.strategy_id.0,
-                &input.signal.market_id.0,
+                &signal_market_id.0,
             )
             .map_err(|_| RiskRejection::InvalidPolicy)?;
         if input.market.observed_at_ms > input.now_ms
@@ -498,6 +533,105 @@ mod tests {
                 execution_slippage_bps: 5,
             }),
             Err(RiskRejection::StaleMarketData)
+        );
+    }
+
+    #[test]
+    fn market_matching_is_canonical_but_never_crosses_venues() {
+        let engine = engine(RiskPolicy::default());
+        let (mut signal, mut market, portfolio) =
+            fixtures(Decimal::from(100), Decimal::from(10_000), 1_000);
+        signal.market_id = MarketId::from(" binance:btcusdt ");
+        market.market_id = MarketId::from("BINANCE:BTCUSDT");
+        assert!(
+            engine
+                .authorize_entry(RiskInput {
+                    signal: &signal,
+                    market: &market,
+                    portfolio: &portfolio,
+                    now_ms: 1_000,
+                    kill_switch_active: false,
+                    execution_slippage_bps: 5,
+                })
+                .is_ok()
+        );
+
+        market.market_id = MarketId::from("COINBASE:BTCUSDT");
+        assert_eq!(
+            engine.authorize_entry(RiskInput {
+                signal: &signal,
+                market: &market,
+                portfolio: &portfolio,
+                now_ms: 1_000,
+                kill_switch_active: false,
+                execution_slippage_bps: 5,
+            }),
+            Err(RiskRejection::MarketMismatch)
+        );
+    }
+
+    #[test]
+    fn canonical_market_id_selects_the_matching_market_risk_override() {
+        let policy =
+            RiskPolicy::from_toml("[markets.\" binance:btcusdt \" ]\nmax_slippage_bps = 3\n")
+                .unwrap();
+        let engine = engine(policy);
+        let (mut signal, mut market, portfolio) =
+            fixtures(Decimal::from(100), Decimal::from(10_000), 1_000);
+        signal.market_id = MarketId::from(" binance:btcusdt ");
+        market.market_id = MarketId::from("BINANCE:BTCUSDT");
+        assert_eq!(
+            engine.authorize_entry(RiskInput {
+                signal: &signal,
+                market: &market,
+                portfolio: &portfolio,
+                now_ms: 1_000,
+                kill_switch_active: false,
+                execution_slippage_bps: 5,
+            }),
+            Err(RiskRejection::SlippageLimit)
+        );
+    }
+
+    #[test]
+    fn duplicate_market_override_keys_after_canonicalization_are_rejected() {
+        let policy = RiskPolicy::from_toml(
+            "[markets.BTCUSDT]\nmax_slippage_bps = 3\n\n[markets.\" btcusdt \"]\nmax_slippage_bps = 4\n",
+        );
+        assert!(matches!(policy, Err(RiskError::InvalidPolicy(_))));
+    }
+
+    #[test]
+    fn empty_market_id_fails_closed_before_sizing() {
+        let engine = engine(RiskPolicy::default());
+        let (mut signal, market, portfolio) =
+            fixtures(Decimal::from(100), Decimal::from(10_000), 1_000);
+        signal.market_id = MarketId::from(" \t ");
+        assert_eq!(
+            engine.authorize_entry(RiskInput {
+                signal: &signal,
+                market: &market,
+                portfolio: &portfolio,
+                now_ms: 1_000,
+                kill_switch_active: false,
+                execution_slippage_bps: 5,
+            }),
+            Err(RiskRejection::InvalidSignal)
+        );
+
+        let (signal, mut market, portfolio) =
+            fixtures(Decimal::from(100), Decimal::from(10_000), 1_000);
+        market.market_id = MarketId::from(" ");
+        assert_eq!(
+            engine.authorize_entry(RiskInput {
+                signal: &signal,
+                market: &market,
+                portfolio: &portfolio,
+                now_ms: 1_000,
+                kill_switch_active: false,
+                execution_slippage_bps: 5,
+            }),
+            Err(RiskRejection::InvalidMarketData)
         );
     }
 

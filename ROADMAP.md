@@ -68,3 +68,18 @@
 - [ ] Integração com walk-forward: infraestrutura não localizada nesta branch e não será simulada como concluída.
 
 Estado e decisões reais: [`docs/BATCH_28_37_STATUS.md`](docs/BATCH_28_37_STATUS.md), [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) e [`docs/ARCHITECTURE_DECISIONS.md`](docs/ARCHITECTURE_DECISIONS.md). Este requisito permanece parcial até validação completa e integração walk-forward.
+
+## Fase A — auditoria inicial do sistema
+
+- [x] Mapear crates, fluxos paper/backtest/Testnet/dashboard e classificar funcionalidades completas, parciais, ausentes e integrações sem confundir mocks com serviços externos.
+- [x] Inventariar riscos e testes existentes sem afirmar que foram executados durante a auditoria.
+- [x] Registrar lacunas e plano incremental em [`docs/audit-initial-2026-10-11.md`](docs/audit-initial-2026-10-11.md).
+
+## Fase B1 — identidade canônica mínima de mercado
+
+- [x] Normalizar `MarketId` na fronteira de risco por trim e ASCII uppercase; rejeitar vazio.
+- [x] Comparar signal/snapshot sem colapsar venues qualificadas diferentes.
+- [x] Aplicar overrides por chave de mercado canônica e cobrir os casos com testes.
+- [ ] Definir identidade tipada completa venue/símbolo/unidade; separar source/receive timestamps; tornar estrita a validação temporal OHLCV; registrar gaps e propagar qualidade derivada até o risco.
+
+Escopo e limitações do incremento: [`docs/phase-b1-market-identity.md`](docs/phase-b1-market-identity.md). B1 não cria adapters, aliases, order book, integração externa ou negociação real.
