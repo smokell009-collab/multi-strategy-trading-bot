@@ -25,4 +25,4 @@ A divergência é selecionável exclusivamente pelo backtest. A config de exempl
 
 ## Estado do commit/push
 
-O commit `817f2ce` (`feat: add causal price-rsi divergence backtest`) foi publicado em `main`. Os gates locais passaram: formatação, 64 testes, Clippy com `-D warnings` e `git diff --check`. O GitHub Actions do commit de código estava **queued** na consulta: [workflow Rust CI](https://github.com/smokell009-collab/multi-strategy-trading-bot/actions/runs/38135998438). Não marcar `DONE_VERIFIED`: a integração walk-forward permanece pendente.
+O commit `817f2ce` (`feat: add causal price-rsi divergence backtest`) e o commit documental `c219fd4` foram publicados em `main`. Os gates locais passaram: formatação, 64 testes, Clippy com `-D warnings` e `git diff --check`. O GitHub Actions do commit documental, que inclui o código do requisito 28, concluiu com **success**: [workflow Rust CI](https://github.com/smokell009-collab/multi-strategy-trading-bot/actions/runs/38136017119). Não marcar `DONE_VERIFIED`: a integração walk-forward permanece pendente.
