@@ -20,6 +20,7 @@ O workspace tinha domínio e validação estrutural, parsing OHLCV, EMA 9/21 no 
 - `cargo test --workspace --locked`: **79 testes passaram, 0 falhas**.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`: passou sem warnings.
 - `git diff --check`: passou.
+- GitHub Actions Rust CI do commit `034a6e9`: sucesso ([execução](https://github.com/smokell009-collab/multi-strategy-trading-bot/actions/runs/38139578511)).
 - Smoke `polymarket-watch --once`: Gamma e order book público retornaram dados; modo reportou `read-only` e `live_order_sent=false`.
 - Smoke contínuo de 12 segundos: feed WebSocket conectou e publicou top-of-book; SQLite temporário persistiu duas contas paper independentes. Nenhum fill foi alegado e nenhuma ordem enviada.
 

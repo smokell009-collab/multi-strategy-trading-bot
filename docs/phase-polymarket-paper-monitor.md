@@ -1,6 +1,6 @@
 # Fase Polymarket — feed público e paper pUSD
 
-**Estado:** implementação e validação local concluídas; CI remoto pendente de publicação/verificação.
+**Estado:** implementação concluída; validação local e CI remoto aprovados.
 
 ## Objetivo confirmado
 
@@ -39,6 +39,7 @@ O risco esperado permanece zero bps por ausência de estimativa independente de 
 - SQLite temporário persistiu as duas carteiras paper independentes (EMA e divergência); o smoke não gerou/alegou fill.
 - As chamadas externas verificadas foram somente GET REST ou subscription no canal público de dados, sem conta/signer.
 - `cargo fmt --all -- --check`, `cargo test --workspace --locked` (79 testes, 0 falhas), `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` e `git diff --check` passaram localmente.
+- CI remoto do commit `034a6e9` passou: [Rust CI no GitHub Actions](https://github.com/smokell009-collab/multi-strategy-trading-bot/actions/runs/38139578511).
 - O teste ocorreu a partir do egress do sandbox da sessão (geolocalização detectada como fora dos EUA); não comprova conectividade para o dispositivo/rede do usuário nos Estados Unidos.
 
 ## Comandos
@@ -53,9 +54,9 @@ cargo run --release --bin polymarket-watch -- \
 
 Persistência padrão: `data/polymarket-paper.sqlite3`; latch compartilhado: `data/KILL_SWITCH.json`. Cada account key inclui mercado, outcome, intervalo e strategy ID. No reinício, estado persistido prevalece sobre `--starting-balance-pusd`.
 
-## Validação ainda pendente
+## Limites da validação
 
-O CI remoto deve ser consultado após o commit. Os smokes exercitam apenas APIs públicas no egress do sandbox, não execução, rentabilidade ou elegibilidade geográfica do usuário/dispositivo.
+Os smokes exercitam apenas APIs públicas no egress do sandbox, não execução, rentabilidade ou elegibilidade geográfica do usuário/dispositivo. O CI valida compilação, testes e lint, não comportamento financeiro nem conectividade no dispositivo do usuário.
 
 ## Fontes oficiais
 
