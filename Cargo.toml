@@ -8,6 +8,8 @@ members = [
     "crates/ode-market-data",
     "crates/ode-strategy-technical",
     "crates/ode-backtest",
+    "crates/ode-model-adapter",
+    "crates/ode-observability",
 ]
 resolver = "3"
 
@@ -30,7 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "net"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
@@ -40,6 +42,8 @@ ode-risk = { path = "crates/ode-risk" }
 ode-market-data = { path = "crates/ode-market-data" }
 ode-strategy-technical = { path = "crates/ode-strategy-technical" }
 ode-backtest = { path = "crates/ode-backtest" }
+ode-model-adapter = { path = "crates/ode-model-adapter" }
+ode-observability = { path = "crates/ode-observability" }
 
 [profile.release]
 strip = true
