@@ -110,7 +110,7 @@ O adaptador de modelo é desligado por padrão. Para habilitá-lo, configure `OD
 - Use keys com **permissão de saque desabilitada**.
 - LLMs podem errar, alucinar dados ou interpretar mal instruções. Mantenha supervisão humana.
 - Verifique a legislação do seu país (ex.: Polymarket tem restrições geográficas).
-- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução real nem promessa de lucro. Saldo/posição paper reiniciam a cada execução. O dashboard é local e não envia notificações externas.
+- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução real nem promessa de lucro. A carteira paper e o cursor de candles são persistidos no SQLite e restaurados após reinício. O dashboard é local e não envia notificações externas.
 - Resultados passados ou simulados não garantem resultados futuros.
 
 ## 📜 Créditos

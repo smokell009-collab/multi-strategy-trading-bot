@@ -49,3 +49,7 @@ Usuário autenticado → POST manual → ode-model-adapter → provedor HTTPS
 O crate `ode-observability` não implementa execução de ordens. O dashboard é opt-in, aceita apenas endereços loopback e autentica todas as APIs de dados com token Bearer; páginas usam CSP estrita, sem CDN, e não habilitam CORS. SQLite registra eventos e status; o JSONL existente continua disponível.
 
 `ode-model-adapter` não depende de `ode-risk` nem de `ode-execution`; o contrato de entrada só contém mercado, intervalo, preço público, sinal observado, saúde do feed e timestamp. O adaptador não declara tools/funções e devolve texto limitado, que o dashboard renderiza como texto. A chamada exige habilitação explícita e clique autenticado; nenhuma chamada é feita em background, e nada da resposta é interpretado como ordem ou override de risco.
+
+## Recuperação da carteira paper
+
+`ode-observability` mantém um snapshot SQLite versionado por estratégia/par/intervalo. Ele inclui caixa, posição, preço/stop, custos, âncora diária UTC e último candle tratado. O estado e o evento de fill são confirmados numa única transação; snapshots incompatíveis ou inválidos interrompem a inicialização, sem reiniciar silenciosamente a carteira.

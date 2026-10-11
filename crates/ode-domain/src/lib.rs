@@ -90,6 +90,30 @@ pub struct PortfolioSnapshot {
     pub has_open_position: bool,
 }
 
+/// Snapshot versionado do estado paper necessário para retomar sem duplicar candles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperPortfolioState {
+    pub schema_version: u16,
+    pub account_key: String,
+    pub symbol: String,
+    pub interval: String,
+    pub starting_balance: Decimal,
+    pub cash: Decimal,
+    pub quantity: Decimal,
+    pub entry_price: Option<Decimal>,
+    pub stop_price: Option<Decimal>,
+    pub entry_fee: Decimal,
+    pub entry_fee_bps: u32,
+    pub position_slippage_bps: u32,
+    pub session_start_equity: Decimal,
+    pub session_date_utc: String,
+    pub last_processed_close_ms: Option<i64>,
+    pub last_mark_price: Option<Decimal>,
+    pub last_signal: String,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderSide {

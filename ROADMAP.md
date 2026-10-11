@@ -7,7 +7,7 @@
 - [x] Estratégia EMA 9/21 e executor paper com sizing, teto de exposição, stop, custos e bloqueio por perda.
 - [x] Auditoria JSONL, testes e CI de formato, workspace e Clippy.
 - [x] Replay histórico básico sem look-ahead, consolidado no crate de backtest da Fase 3.
-- [ ] Persistir carteira e estado para recuperação após reinício.
+- [x] Persistir carteira paper, posição/custos e cursor de candle para recuperação após reinício; snapshot versionado e fail-closed.
 
 ## Fase 2 — domínio e governança de risco
 
@@ -34,11 +34,12 @@
 - [x] Auditoria persistente e consultável em SQLite com JSONL mantido para compatibilidade.
 - [x] Adaptador OpenAI-compatible opt-in, acionado manualmente, sem tool calling e com contexto público tipado; sem dependência de `ode-risk`/`ode-execution`.
 
-**Limites:** o painel não é exposto à rede e não envia push/webhook; polling do navegador é local. O adaptador retorna apenas comentário textual e não controla sinais, risco ou execução. Carteira paper continua reiniciando a cada processo; execução real permanece fora de escopo.
+**Limites:** o painel não é exposto à rede e não envia push/webhook; polling do navegador é local. O adaptador retorna apenas comentário textual e não controla sinais, risco ou execução. Execução real permanece fora de escopo.
 
 ## Fase 5 — integração de execução (não implementada)
 
-- [ ] Definir exchange/mercado, jurisdição, políticas e ambiente de teste.
+- [x] Selecionar Binance Spot Testnet/BTCUSDT como alvo de desenvolvimento; jurisdição do operador permanece não informada e não é considerada validada.
+- [ ] Implementar e testar políticas de execução específicas do ambiente de teste.
 - [ ] Adaptador em sandbox/testnet, ciclo completo de ordem e reconciliação.
 - [ ] Revisão de segurança e autorização humana explícita antes de qualquer execução real.
 

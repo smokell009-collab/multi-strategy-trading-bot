@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use ode_domain::PaperPortfolioState;
 use ode_events::AuditEvent;
 use ode_model_adapter::{OpenAiCompatibleAdapter, PublicMarketContext};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -23,6 +24,8 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
+const PAPER_STATE_SCHEMA_VERSION: u16 = 1;
+
 #[derive(Debug, Error)]
 pub enum ObservabilityError {
     #[error("falha de sistema de arquivos: {0}")]
@@ -31,6 +34,8 @@ pub enum ObservabilityError {
     Sqlite(#[from] rusqlite::Error),
     #[error("falha JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("snapshot paper inválido: {0}")]
+    InvalidPaperState(String),
     #[error("token do dashboard ausente ou inseguro")]
     InvalidToken,
     #[error("dashboard aceita somente bind em endereço loopback")]
@@ -68,6 +73,12 @@ impl AuditStore {
              CREATE TABLE IF NOT EXISTS bot_status (
                  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                  updated_at TEXT NOT NULL,
+                 payload_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS paper_portfolio_state (
+                 account_key TEXT PRIMARY KEY NOT NULL,
+                 schema_version INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL,
                  payload_json TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS alerts (
@@ -192,6 +203,93 @@ impl AuditStore {
             .transpose()
     }
 
+    pub fn load_paper_state(
+        &self,
+        account_key: &str,
+    ) -> Result<Option<PaperPortfolioState>, ObservabilityError> {
+        let connection = self.connection()?;
+        let stored: Option<(i64, String)> = connection
+            .query_row(
+                "SELECT schema_version, payload_json FROM paper_portfolio_state WHERE account_key=?1",
+                [account_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((stored_version, payload)) = stored else {
+            return Ok(None);
+        };
+        let state: PaperPortfolioState = serde_json::from_str(&payload)?;
+        validate_paper_state(&state)?;
+        if stored_version != i64::from(state.schema_version) || state.account_key != account_key {
+            return Err(ObservabilityError::InvalidPaperState(
+                "account key/schema no banco não corresponde ao payload".into(),
+            ));
+        }
+        Ok(Some(state))
+    }
+
+    pub fn save_paper_state(&self, state: &PaperPortfolioState) -> Result<(), ObservabilityError> {
+        validate_paper_state(state)?;
+        let payload = serde_json::to_string(state)?;
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO paper_portfolio_state(account_key, schema_version, updated_at_ms, payload_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(account_key) DO UPDATE SET
+                schema_version=excluded.schema_version,
+                updated_at_ms=excluded.updated_at_ms,
+                payload_json=excluded.payload_json",
+            params![state.account_key, state.schema_version, state.updated_at_ms, payload],
+        )?;
+        Ok(())
+    }
+
+    /// Commit audit event, alert and paper state together so restart cannot split a fill from its snapshot.
+    pub fn commit_paper_event(
+        &self,
+        event: &AuditEvent,
+        state: &PaperPortfolioState,
+    ) -> Result<(), ObservabilityError> {
+        validate_paper_state(state)?;
+        let event_details = serde_json::to_string(&event.details)?;
+        let state_payload = serde_json::to_string(state)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_id, occurred_at, event_type, market_id, details_json)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                event.event_id.to_string(),
+                event.occurred_at,
+                event.event_type,
+                event.market_id.0,
+                event_details
+            ],
+        )?;
+        if let Some((category, severity, title)) = alert_rule(&event.event_type) {
+            upsert_alert(
+                &transaction,
+                &format!("{category}:{}", event.market_id.0),
+                category,
+                severity,
+                title,
+                &event.market_id.0,
+                event.details.clone(),
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO paper_portfolio_state(account_key, schema_version, updated_at_ms, payload_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(account_key) DO UPDATE SET
+                schema_version=excluded.schema_version,
+                updated_at_ms=excluded.updated_at_ms,
+                payload_json=excluded.payload_json",
+            params![state.account_key, state.schema_version, state.updated_at_ms, state_payload],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn query_events(
         &self,
         limit: usize,
@@ -307,6 +405,97 @@ impl AuditStore {
         )?;
         Ok(changed > 0)
     }
+}
+
+fn validate_paper_state(state: &PaperPortfolioState) -> Result<(), ObservabilityError> {
+    let invalid = |reason: &str| ObservabilityError::InvalidPaperState(reason.to_owned());
+    if state.schema_version != PAPER_STATE_SCHEMA_VERSION {
+        return Err(invalid("versão do snapshot não suportada"));
+    }
+    if state.account_key.trim().is_empty()
+        || state.symbol.trim().is_empty()
+        || state.interval.trim().is_empty()
+        || state.starting_balance <= rust_decimal::Decimal::ZERO
+        || state.cash < rust_decimal::Decimal::ZERO
+        || state.quantity < rust_decimal::Decimal::ZERO
+        || state.entry_fee < rust_decimal::Decimal::ZERO
+        || state.session_start_equity <= rust_decimal::Decimal::ZERO
+        || state.entry_fee_bps > 1_000
+        || state.position_slippage_bps > 1_000
+        || state.updated_at_ms < 0
+        || !matches!(state.last_signal.as_str(), "Buy" | "Sell" | "Hold")
+    {
+        return Err(invalid("campos fora dos limites esperados"));
+    }
+    if chrono::NaiveDate::parse_from_str(&state.session_date_utc, "%Y-%m-%d").is_err() {
+        return Err(invalid("data de sessão UTC inválida"));
+    }
+    if state
+        .last_mark_price
+        .is_some_and(|price| price <= rust_decimal::Decimal::ZERO)
+    {
+        return Err(invalid("preço de marcação deve ser positivo"));
+    }
+    if state
+        .last_processed_close_ms
+        .is_some_and(|timestamp| timestamp < 0)
+    {
+        return Err(invalid("cursor de candle inválido"));
+    }
+    let has_position = state.quantity > rust_decimal::Decimal::ZERO;
+    if has_position != (state.entry_price.is_some() && state.stop_price.is_some())
+        || state
+            .entry_price
+            .is_some_and(|price| price <= rust_decimal::Decimal::ZERO)
+        || state
+            .stop_price
+            .is_some_and(|price| price <= rust_decimal::Decimal::ZERO)
+    {
+        return Err(invalid("campos da posição aberta estão inconsistentes"));
+    }
+    if !has_position
+        && (state.entry_fee != rust_decimal::Decimal::ZERO
+            || state.entry_fee_bps != 0
+            || state.position_slippage_bps != 0)
+    {
+        return Err(invalid("custos de posição existem sem posição aberta"));
+    }
+    Ok(())
+}
+
+fn upsert_alert(
+    connection: &Connection,
+    alert_key: &str,
+    category: &str,
+    severity: &str,
+    title: &str,
+    market_id: &str,
+    details: Value,
+) -> Result<(), ObservabilityError> {
+    let now = Utc::now().to_rfc3339();
+    let details_json = serde_json::to_string(&details)?;
+    connection.execute(
+        "INSERT INTO alerts(alert_key, category, severity, title, market_id, details_json,
+                            first_seen_at, last_seen_at, occurrence_count, status)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 1, 'active')
+         ON CONFLICT(alert_key) DO UPDATE SET
+            severity=excluded.severity,
+            title=excluded.title,
+            details_json=excluded.details_json,
+            last_seen_at=excluded.last_seen_at,
+            occurrence_count=alerts.occurrence_count + 1,
+            status='active', acknowledged_at=NULL, resolved_at=NULL",
+        params![
+            alert_key,
+            category,
+            severity,
+            title,
+            market_id,
+            details_json,
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 fn alert_rule(event_type: &str) -> Option<(&'static str, &'static str, &'static str)> {
@@ -634,12 +823,78 @@ async fn api_advisory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ode_domain::PaperPortfolioState;
     use serde_json::json;
 
     fn store() -> (AuditStore, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let store = AuditStore::open(directory.path().join("audit.sqlite3")).unwrap();
         (store, directory)
+    }
+
+    fn paper_state() -> PaperPortfolioState {
+        PaperPortfolioState {
+            schema_version: PAPER_STATE_SCHEMA_VERSION,
+            account_key: "paper:ema_crossover:BTCUSDT:1m".into(),
+            symbol: "BTCUSDT".into(),
+            interval: "1m".into(),
+            starting_balance: rust_decimal::Decimal::from(10_000),
+            cash: rust_decimal::Decimal::from(7_400),
+            quantity: rust_decimal::Decimal::new(25, 2),
+            entry_price: Some(rust_decimal::Decimal::from(100_000)),
+            stop_price: Some(rust_decimal::Decimal::from(98_000)),
+            entry_fee: rust_decimal::Decimal::new(25, 1),
+            entry_fee_bps: 10,
+            position_slippage_bps: 5,
+            session_start_equity: rust_decimal::Decimal::from(10_000),
+            session_date_utc: "2026-10-11".into(),
+            last_processed_close_ms: Some(1_791_690_000_000),
+            last_mark_price: Some(rust_decimal::Decimal::from(100_000)),
+            last_signal: "Buy".into(),
+            updated_at_ms: 1_791_690_000_001,
+        }
+    }
+
+    #[test]
+    fn paper_state_survives_reopening_and_unknown_versions_fail_closed() {
+        let (store, directory) = store();
+        let state = paper_state();
+        store.save_paper_state(&state).unwrap();
+        drop(store);
+
+        let reopened = AuditStore::open(directory.path().join("audit.sqlite3")).unwrap();
+        assert_eq!(
+            reopened
+                .load_paper_state("paper:ema_crossover:BTCUSDT:1m")
+                .unwrap(),
+            Some(state.clone())
+        );
+        let mut unsupported = state;
+        unsupported.schema_version += 1;
+        assert!(matches!(
+            reopened.save_paper_state(&unsupported),
+            Err(ObservabilityError::InvalidPaperState(_))
+        ));
+    }
+
+    #[test]
+    fn paper_event_and_snapshot_commit_together() {
+        let (store, _directory) = store();
+        let mut state = paper_state();
+        state.last_signal = "Hold".into();
+        let event = AuditEvent::new("signal_observed", "BTCUSDT", json!({"signal":"Hold"}));
+        store.commit_paper_event(&event, &state).unwrap();
+        assert_eq!(
+            store.load_paper_state(&state.account_key).unwrap(),
+            Some(state)
+        );
+        assert_eq!(
+            store
+                .query_events(10, Some("signal_observed"), None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
