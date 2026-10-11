@@ -1,17 +1,20 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::Parser;
+use ode_backtest::{BacktestConfig, run_out_of_sample};
 use ode_domain::{
     Candle, DataQuality, Direction, MarketId, MarketSnapshot, PortfolioSnapshot, StrategyId,
     TradeSignal,
 };
 use ode_events::AuditEvent;
+use ode_market_data::{DataQualityReport, read_csv, validate_candles};
 use ode_risk::{KillSwitch, RiskEngine, RiskInput, RiskLimits, RiskPolicy};
+use ode_strategy_technical::{EmaCrossover, StrategiesConfig, Strategy};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::PathBuf,
     str::FromStr,
@@ -21,8 +24,6 @@ use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 const BINANCE_KLINES_URL: &str = "https://data-api.binance.vision/api/v3/klines";
-const FAST_EMA: usize = 9;
-const SLOW_EMA: usize = 21;
 const KLINE_LIMIT: usize = 100;
 
 #[derive(Debug, Parser)]
@@ -62,6 +63,18 @@ struct Args {
     /// Slippage simulado em basis points; 5 = 0,05%.
     #[arg(long, default_value_t = 5)]
     slippage_bps: u32,
+    /// Arquivo TOML com parâmetros e interruptor da estratégia.
+    #[arg(long, default_value = "configs/strategies.example.toml")]
+    strategy_config: PathBuf,
+    /// CSV OHLCV histórico: executa holdout cronológico e não consulta a Binance.
+    #[arg(long)]
+    backtest_csv: Option<PathBuf>,
+    /// Fração inicial in-sample (0.70 = primeiros 70%; último trecho é OOS; sem ajuste automático).
+    #[arg(long = "in-sample-ratio", default_value = "0.7")]
+    in_sample_ratio: Decimal,
+    /// Caminho opcional para gravar o relatório JSON além de imprimi-lo no stdout.
+    #[arg(long)]
+    backtest_report: Option<PathBuf>,
     /// Arquivo TOML com overrides por estratégia e por ativo.
     #[arg(long, default_value = "configs/risk-overrides.example.toml")]
     risk_overrides: PathBuf,
@@ -302,27 +315,30 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.fee_bps > 1_000 || args.slippage_bps > 1_000 {
         bail!("fee-bps e slippage-bps não podem exceder 1000");
     }
+    if args.in_sample_ratio < Decimal::new(5, 1) || args.in_sample_ratio > Decimal::new(9, 1) {
+        bail!("in-sample-ratio deve estar entre 0.5 e 0.9");
+    }
     Ok(())
 }
 
-fn risk_engine(args: &Args, policy: RiskPolicy) -> Result<RiskEngine> {
+fn risk_limits(args: &Args) -> Result<RiskLimits> {
     let max_age = interval_millis(&args.interval)
         .context("intervalo inválido")?
         .saturating_mul(2);
-    RiskEngine::new(
-        RiskLimits {
-            risk_per_trade: args.risk_per_trade,
-            max_daily_loss: args.max_daily_loss,
-            max_allocation: args.max_allocation,
-            stop_loss: args.stop_loss,
-            fee_bps: args.fee_bps,
-            max_slippage_bps: args.slippage_bps,
-            min_expected_edge_bps: 0,
-            max_market_data_age_ms: max_age,
-        },
-        policy,
-    )
-    .context("política de risco inválida; fail-closed")
+    Ok(RiskLimits {
+        risk_per_trade: args.risk_per_trade,
+        max_daily_loss: args.max_daily_loss,
+        max_allocation: args.max_allocation,
+        stop_loss: args.stop_loss,
+        fee_bps: args.fee_bps,
+        max_slippage_bps: args.slippage_bps,
+        min_expected_edge_bps: 0,
+        max_market_data_age_ms: max_age,
+    })
+}
+
+fn risk_engine(args: &Args, policy: RiskPolicy) -> Result<RiskEngine> {
+    RiskEngine::new(risk_limits(args)?, policy).context("política de risco inválida; fail-closed")
 }
 
 fn interval_millis(interval: &str) -> Option<i64> {
@@ -343,7 +359,11 @@ fn interval_millis(interval: &str) -> Option<i64> {
     }
 }
 
-async fn fetch_candles(client: &Client, args: &Args) -> Result<Vec<Candle>> {
+async fn fetch_candles(
+    client: &Client,
+    args: &Args,
+    min_history_len: usize,
+) -> Result<(Vec<Candle>, DataQualityReport)> {
     let limit = KLINE_LIMIT.to_string();
     let response = client
         .get(BINANCE_KLINES_URL)
@@ -368,61 +388,45 @@ async fn fetch_candles(client: &Client, args: &Args) -> Result<Vec<Candle>> {
             bail!("candle recebido com menos de 7 campos");
         }
         let open_time_ms = row[0].as_i64().context("open time inválido")?;
+        let open = Decimal::from_str(row[1].as_str().context("open inválido")?)
+            .context("preço open inválido")?;
+        let high = Decimal::from_str(row[2].as_str().context("high inválido")?)
+            .context("preço high inválido")?;
+        let low = Decimal::from_str(row[3].as_str().context("low inválido")?)
+            .context("preço low inválido")?;
         let close = Decimal::from_str(row[4].as_str().context("close inválido")?)
             .context("preço de fechamento inválido")?;
+        let volume = Decimal::from_str(row[5].as_str().context("volume inválido")?)
+            .context("volume inválido")?;
         let close_time_ms = row[6].as_i64().context("close time inválido")?;
         if close > Decimal::ZERO && close_time_ms < now_ms {
             candles.push(Candle {
                 open_time_ms,
                 close_time_ms,
+                open,
+                high,
+                low,
                 close,
+                volume,
+                received_at_ms: None,
             });
         }
     }
     candles.sort_by_key(|c| c.open_time_ms);
-    if candles.len() < SLOW_EMA + 1 {
+    if candles.len() < min_history_len {
         bail!(
             "dados insuficientes: {} candles fechados; mínimo {}",
             candles.len(),
-            SLOW_EMA + 1
+            min_history_len
         );
     }
-    Ok(candles)
-}
-
-fn ema(values: &[Decimal], period: usize) -> Option<Decimal> {
-    if period == 0 || values.len() < period {
-        return None;
+    if let Some(latest) = candles.last_mut() {
+        latest.received_at_ms = Some(now_ms);
     }
-    let alpha = Decimal::from(2) / Decimal::from(period + 1);
-    let mut current = values[0];
-    for value in &values[1..] {
-        current = *value * alpha + current * (Decimal::ONE - alpha);
-    }
-    Some(current)
-}
-
-fn compute_signal(candles: &[Candle]) -> Signal {
-    if candles.len() < SLOW_EMA + 1 {
-        return Signal::Hold;
-    }
-    let closes: Vec<Decimal> = candles.iter().map(|c| c.close).collect();
-    let previous = &closes[..closes.len() - 1];
-    let (Some(prev_fast), Some(prev_slow), Some(curr_fast), Some(curr_slow)) = (
-        ema(previous, FAST_EMA),
-        ema(previous, SLOW_EMA),
-        ema(&closes, FAST_EMA),
-        ema(&closes, SLOW_EMA),
-    ) else {
-        return Signal::Hold;
-    };
-    if prev_fast <= prev_slow && curr_fast > curr_slow {
-        Signal::Buy
-    } else if prev_fast >= prev_slow && curr_fast < curr_slow {
-        Signal::Sell
-    } else {
-        Signal::Hold
-    }
+    let period_ms = interval_millis(&args.interval).context("intervalo inválido")?;
+    let quality = validate_candles(&candles, period_ms)
+        .context("qualidade/cadência de mercado inválida; nenhuma decisão permitida")?;
+    Ok((candles, quality))
 }
 
 fn is_fresh(candle: &Candle, interval: &str) -> bool {
@@ -448,12 +452,61 @@ async fn main() -> Result<()> {
         info!(path=%kill_switch.path().display(), reason=%state.reason, "kill-switch persistido; novas entradas bloqueadas");
         return Ok(());
     }
+    let strategy_config =
+        StrategiesConfig::from_path(&args.strategy_config).with_context(|| {
+            format!(
+                "não foi possível carregar estratégia em {}",
+                args.strategy_config.display()
+            )
+        })?;
+    let strategy = EmaCrossover::new(strategy_config.ema_crossover)
+        .context("configuração da estratégia EMA inválida")?;
     let policy = RiskPolicy::from_path(&args.risk_overrides).with_context(|| {
         format!(
             "não foi possível carregar overrides em {}",
             args.risk_overrides.display()
         )
     })?;
+    if let Some(csv_path) = &args.backtest_csv {
+        let period_ms = interval_millis(&args.interval).context("intervalo inválido")?;
+        let (candles, _) = read_csv(
+            File::open(csv_path).with_context(|| {
+                format!("não foi possível abrir histórico {}", csv_path.display())
+            })?,
+            period_ms,
+        )
+        .with_context(|| format!("histórico CSV inválido: {}", csv_path.display()))?;
+        let report = run_out_of_sample(
+            &candles,
+            &strategy,
+            &BacktestConfig {
+                starting_balance: args.starting_balance,
+                risk_limits: risk_limits(&args)?,
+                risk_policy: policy,
+                in_sample_ratio: args.in_sample_ratio,
+                interval_ms: period_ms,
+                market_id: args.symbol.clone(),
+            },
+        )
+        .context("holdout fora da amostra não pôde ser calculado")?;
+        let report_json = serde_json::to_string_pretty(&report)?;
+        if let Some(report_path) = &args.backtest_report {
+            if let Some(parent) = report_path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+            {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(report_path, &report_json).with_context(|| {
+                format!(
+                    "não foi possível gravar relatório {}",
+                    report_path.display()
+                )
+            })?;
+        }
+        println!("{report_json}");
+        return Ok(());
+    }
     let risk_engine = risk_engine(&args, policy)?;
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
@@ -469,9 +522,11 @@ async fn main() -> Result<()> {
         "Olho de Deus iniciado em PAPER TRADING. Execução real não está implementada.");
 
     loop {
-        match fetch_candles(&client, &args).await {
-            Ok(candles) => {
+        match fetch_candles(&client, &args, strategy.min_history_len()).await {
+            Ok((candles, quality)) => {
                 let latest = candles.last().expect("fetch valida candles não vazios");
+                info!(bars=quality.bars, p50_latency_ms=?quality.latency_p50_ms,
+                    p95_latency_ms=?quality.latency_p95_ms, "qualidade do feed consultada");
                 // Consultar o latch em todo ciclo, mesmo quando ainda não há candle novo.
                 // Um arquivo ilegível/corrompido interrompe o processo: fail-closed.
                 let kill_active = kill_switch
@@ -493,7 +548,11 @@ async fn main() -> Result<()> {
                             json!({"close_time_ms":latest.close_time_ms}),
                         )?;
                     } else {
-                        let signal = compute_signal(&candles);
+                        let signal = match strategy.evaluate(&candles) {
+                            Direction::Buy => Signal::Buy,
+                            Direction::Sell => Signal::Sell,
+                            Direction::Hold => Signal::Hold,
+                        };
                         broker.on_candle(&args, signal, latest, &risk_engine, kill_active)?;
                     }
                 }
@@ -534,7 +593,12 @@ mod tests {
         Candle {
             open_time_ms: now - 60_000 + i,
             close_time_ms: now,
+            open: close,
+            high: close,
+            low: close,
             close,
+            volume: Decimal::ONE,
+            received_at_ms: Some(now),
         }
     }
 
@@ -550,6 +614,10 @@ mod tests {
             stop_loss: Decimal::new(2, 2),
             fee_bps: 10,
             slippage_bps: 5,
+            strategy_config: PathBuf::from("configs/strategies.example.toml"),
+            backtest_csv: None,
+            in_sample_ratio: Decimal::new(7, 1),
+            backtest_report: None,
             risk_overrides: PathBuf::from("configs/risk-overrides.example.toml"),
             kill_switch_file: PathBuf::from("data/KILL_SWITCH.json"),
             activate_kill_switch: None,
@@ -565,13 +633,19 @@ mod tests {
     fn crossover_buy_is_detected_without_lookahead() {
         let mut candles: Vec<Candle> = (0..40).map(|i| candle(i, Decimal::from(100 - i))).collect();
         candles.push(candle(40, Decimal::from(200)));
-        assert_eq!(compute_signal(&candles), Signal::Buy);
+        let strategy = EmaCrossover::default();
+        assert_eq!(strategy.evaluate(&candles), Direction::Buy);
+        assert_ne!(
+            strategy.evaluate(&candles[..candles.len() - 1]),
+            Direction::Buy
+        );
     }
 
     #[test]
     fn insufficient_history_never_signals() {
         let candles: Vec<Candle> = (0..10).map(|i| candle(i, Decimal::from(100 + i))).collect();
-        assert_eq!(compute_signal(&candles), Signal::Hold);
+        let strategy = EmaCrossover::default();
+        assert_eq!(strategy.evaluate(&candles), Direction::Hold);
     }
 
     #[test]
