@@ -11,6 +11,7 @@ members = [
     "crates/ode-backtest",
     "crates/ode-model-adapter",
     "crates/ode-observability",
+    "crates/ode-polymarket",
 ]
 resolver = "3"
 
@@ -18,12 +19,16 @@ resolver = "3"
 name = "olho-de-deus"
 version = "0.2.0"
 edition = "2024"
-description = "Bot paper com estratégia modular, motor de risco e adapter Binance Spot Testnet explícito"
+description = "Bot paper com estratégias, monitor Polymarket read-only e adapter Binance Spot Testnet explícito"
 license = "MIT"
 
 [[bin]]
 name = "olho-de-deus"
 path = "src/main.rs"
+
+[[bin]]
+name = "polymarket-watch"
+path = "src/bin/polymarket_watch.rs"
 
 [dependencies]
 anyhow = "1"
@@ -33,7 +38,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
@@ -47,6 +52,7 @@ ode-strategy-technical = { path = "crates/ode-strategy-technical" }
 ode-backtest = { path = "crates/ode-backtest" }
 ode-model-adapter = { path = "crates/ode-model-adapter" }
 ode-observability = { path = "crates/ode-observability" }
+ode-polymarket = { path = "crates/ode-polymarket" }
 
 [profile.release]
 strip = true

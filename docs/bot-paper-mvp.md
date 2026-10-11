@@ -3,6 +3,7 @@
 ## O que funciona
 
 - Consulta candles públicos Spot da Binance (`data-api.binance.vision`, `GET /api/v3/klines`), sem credenciais.
+- Monitor read-only Polymarket em binário separado, com snapshots REST e trades/book por WebSocket público; sem chaves ou endpoint de ordens.
 - Ingestão OHLCV, verificação de timestamps/cadência e OHLC consistente; dados atrasados ou inconsistentes bloqueiam decisões.
 - Estatísticas de latência p50/p95/máxima quando os timestamps originais de recebimento estão disponíveis.
 - EMA crossover isolada em `ode-strategy-technical`, com parâmetros e interruptor `enabled` em TOML.
@@ -30,7 +31,21 @@ pivot_left_bars = 2
 pivot_right_bars = 2
 ```
 
-Defina `enabled = false` para desativar a EMA sem mexer nos gates de risco ou no feed. A divergência permanece desligada por padrão e é selecionável apenas com `--backtest-csv --backtest-strategy price-rsi-divergence`; não está conectada ao loop paper. Ambas as estratégias recebem apenas candles fechados e não controlam risco nem execução. O detector RSI/preço marca invalidação por rompimento do extremo do segundo pivô e não estima probabilidade. Walk-forward ainda não existe nesta branch.
+Defina `enabled = false` para desativar a EMA sem mexer nos gates de risco ou no feed. Na binária principal, a divergência continua desligada por padrão e só é selecionável com `--backtest-csv --backtest-strategy price-rsi-divergence`; o paper Binance permanece EMA. O binário Polymarket independente pode rodar EMA, divergência ou ambas em carteiras paper separadas. Ambas recebem candles fechados e não controlam risco nem execução. O detector RSI/preço marca invalidação por rompimento do extremo do segundo pivô e não estima probabilidade. Walk-forward ainda não existe nesta branch.
+
+## Polymarket — feed público e paper em pUSD
+
+O binário `polymarket-watch` acompanha um mercado/outcome escolhido por slug. Consulta metadados Gamma, snapshot CLOB, histórico Data API e WebSocket público; não autentica usuário, não consulta saldo/posições privadas e não contém código para enviar ordens. Como os Estados Unidos são close-only segundo a documentação oficial consultada, o caminho fica estritamente read-only + simulação local.
+
+```bash
+cargo run --release --bin polymarket-watch -- \
+  --slug 'SLUG-EXATO-DO-MERCADO' --outcome yes --once
+
+cargo run --release --bin polymarket-watch -- \
+  --slug 'SLUG-EXATO-DO-MERCADO' --outcome yes --interval 1m --strategy both
+```
+
+Os preços são de shares YES/NO em pUSD, não OHLC de BTC/ETH spot. O endpoint de histórico oferece observações pontuais que viram candles OHLC sintéticos; eventos de trade formam candles live e lacunas não são preenchidas. `both` cria uma conta pUSD independente para cada estratégia, não uma carteira agregada. Paper fills consomem níveis do book e aplicam fee schedule conhecida; fees desconhecidas/incompatíveis bloqueiam fills. O RiskEngine e o kill-switch são reutilizados, e evento + carteira persistem no SQLite `data/polymarket-paper.sqlite3`. Limitações, fontes e opções: [`setup-polymarket.md`](setup-polymarket.md) e [`phase-polymarket-paper-monitor.md`](phase-polymarket-paper-monitor.md).
 
 ## Backtest OOS a partir de CSV
 
@@ -137,7 +152,7 @@ O botão só envia uma solicitação após ação manual autenticada. O adaptado
 
 ## Arquitetura e testes
 
-Crates: `ode-domain` (tipos), `ode-market-data` (CSV, integridade e latência), `ode-strategy-technical` (EMA modular), `ode-backtest` (replay/holdout), `ode-events` (auditoria), `ode-risk` (autorização independente), `ode-execution` (contratos, journal SQLite e idempotência/reconciliação), `ode-binance-testnet` (REST HMAC fixo à Spot Testnet), `ode-observability` (SQLite/API/dashboard) e `ode-model-adapter` (comentário read-only opt-in).
+Crates: `ode-domain` (tipos), `ode-market-data` (CSV, integridade e latência), `ode-strategy-technical` (EMA e divergência), `ode-backtest` (replay/holdout), `ode-events` (auditoria), `ode-risk` (autorização independente), `ode-execution` (contratos, journal SQLite e idempotência/reconciliação), `ode-binance-testnet` (REST HMAC fixo à Spot Testnet), `ode-polymarket` (dados públicos REST/WebSocket sem ordens), `ode-observability` (SQLite/API/dashboard) e `ode-model-adapter` (comentário read-only opt-in).
 
 ```bash
 cargo fmt --all -- --check
@@ -179,7 +194,7 @@ Os testes usam mocks locais e o vetor oficial de assinatura HMAC. Nenhuma ordem 
 
 Saldo, posição paper, custos e cursor de candle são persistidos no SQLite; o latch e a auditoria também persistem. O sinal EMA usa edge esperado zero, não calibrado, e não representa vantagem estatística. Fills históricos e stops não reproduzem a fila de ordens, liquidez, taxas reais, funding ou latência de mercado. A métrica de recebimento só é tão confiável quanto os timestamps fornecidos. A perda diária usa início de sessão UTC e não substitui os controles de risco de uma venue.
 
-O executável suporta somente comandos manuais de negociação na Binance Spot Testnet; a ordem é enviada externamente ao ambiente de teste e não é um fill simulado local, mas isso não representa execução em produção. Não existe host/flag de produção e nenhum caminho envia ordem real. O comando `MARKET` não instala stop e não oferece saída automática. Futuros, DEX, integração Polymarket, notificações externas e IA autônoma seguem fora de escopo. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
+O executável principal suporta somente comandos manuais de negociação na Binance Spot Testnet; a ordem é enviada externamente ao ambiente de teste e não é um fill simulado local, mas isso não representa execução em produção. Não existe host/flag de produção e nenhum caminho envia ordem real. O comando `MARKET` não instala stop e não oferece saída automática. Polymarket é somente leitura e paper local, sem execução real; notificações externas e IA autônoma seguem fora de escopo. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
 
 ## Referência do feed
 

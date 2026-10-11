@@ -83,3 +83,14 @@ Estado e decisões reais: [`docs/BATCH_28_37_STATUS.md`](docs/BATCH_28_37_STATUS
 - [ ] Definir identidade tipada completa venue/símbolo/unidade; separar source/receive timestamps; tornar estrita a validação temporal OHLCV; registrar gaps e propagar qualidade derivada até o risco.
 
 Escopo e limitações do incremento: [`docs/phase-b1-market-identity.md`](docs/phase-b1-market-identity.md). B1 não cria adapters, aliases, order book, integração externa ou negociação real.
+
+## Fase C — Polymarket read-only e paper em pUSD
+
+- [x] Adapter público Gamma/CLOB/Data API e market WebSocket: metadados, IDs V1/V2 por outcome, book snapshots/deltas, prints e histórico.
+- [x] Binário `polymarket-watch` separado do fluxo Binance; market slug e outcome selecionados explicitamente.
+- [x] Reutilizar EMA e divergência preço/RSI, motor de risco, kill-switch e auditoria SQLite em carteiras paper pUSD separadas.
+- [x] Simulação de fills por profundidade/taxas conhecidas; bloquear novos fills quando fee schedule não é suportada.
+- [ ] Validar acessibilidade no dispositivo/rede/região do operador e avaliar a qualidade de sinais com dados históricos independentes; nenhum edge está comprovado.
+- [ ] Qualquer escopo além de leitura/paper exigiria nova revisão de jurisdição e autorização; não há execução Polymarket implementada.
+
+**Limite:** candles técnicos são aproximações do preço de probability/outcome do Polymarket, não preços OHLC spot de BTC/ETH. Fills não modelam prioridade de fila/latência, não há probabilidade independente e não há ordem assinada. A jurisdição informada é EUA e permanece close-only segundo a documentação consultada; não se habilita nova posição.

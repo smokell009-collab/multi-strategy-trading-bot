@@ -1,0 +1,13 @@
+# Estratégias Polymarket de exemplo. Ajustes não indicam edge nem recomendação.
+# Cada estratégia é simulada em carteira paper pUSD independente para comparação.
+
+[ema_crossover]
+enabled = true
+fast_period = 9
+slow_period = 21
+
+[price_rsi_divergence]
+enabled = true
+rsi_period = 14
+pivot_left_bars = 2
+pivot_right_bars = 2

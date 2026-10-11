@@ -11,7 +11,7 @@ Base organizada para um bot **multi-estratégia** em que o **Claude** (Claude De
 | Módulo | Venue | Uso principal |
 |---|---|---|
 | Análise técnica | **TradingView** | Indicadores, screeners, sinais |
-| Mercados de previsão | **Polymarket** | Probabilidades de eventos (Gamma/CLOB/Data APIs) |
+| Mercados de previsão | **Polymarket** | Gamma/CLOB/Data APIs públicos; monitor e simulação paper pUSD, sem ordens |
 | Ações e ETFs (EUA) | **Alpaca** | Execução em conta *paper* |
 | Cripto | Binance Spot Testnet (Rust) + conectores MCP/CCXT existentes | Dados públicos e ordens manuais somente em **testnet** |
 
@@ -20,8 +20,9 @@ Base organizada para um bot **multi-estratégia** em que o **Claude** (Claude De
 ```
 multi-strategy-trading-bot/
 ├── Cargo.toml / Cargo.lock              # Workspace Rust
-├── src/main.rs                          # Bot paper executável
-├── crates/                              # Domínio, dados, estratégia, backtest, risco e execução
+├── src/main.rs                          # Bot paper e comandos Binance Spot Testnet
+├── src/bin/polymarket_watch.rs          # Binário separado: monitor público + paper Polymarket
+├── crates/                              # Domínio, dados, estratégias, backtest, risco, execução, venues
 ├── configs/                             # Exemplos de configuração
 ├── docs/                                # Guias, arquitetura e segurança
 ├── prompts/                             # Prompt do orquestrador
@@ -159,7 +160,25 @@ cargo run --release -- \
   --backtest-report data/divergence-report.json
 ```
 
-Edite `enabled = true` na seção `[price_rsi_divergence]` somente para essa análise. O seletor só é aceito junto de `--backtest-csv`; o loop paper permanece conectado à EMA 9/21. O relatório registra ID, versão algorítmica e parâmetros serializados. Esta branch não contém walk-forward nem fingerprint do dataset; portanto a integração completa do requisito 28 continua pendente e os resultados do holdout não demonstram edge ou rentabilidade futura. Veja [`docs/BATCH_28_37_STATUS.md`](docs/BATCH_28_37_STATUS.md).
+Na binária principal, edite `enabled = true` na seção `[price_rsi_divergence]` somente para análise com `--backtest-csv`; o loop paper Binance permanece na EMA 9/21. A binária Polymarket separada pode usar EMA e divergência em carteiras paper independentes. O relatório registra ID, versão algorítmica e parâmetros serializados. Esta branch não contém walk-forward nem fingerprint do dataset; portanto a integração completa do requisito 28 continua pendente e os resultados do holdout não demonstram edge ou rentabilidade futura. Veja [`docs/BATCH_28_37_STATUS.md`](docs/BATCH_28_37_STATUS.md).
+
+## Polymarket — monitor público e simulação paper pUSD
+
+O binário Rust separado consulta um slug escolhido pelo operador na Gamma, lê o book público do outcome YES ou NO e acompanha trades/atualizações por WebSocket. Ele usa a EMA e a divergência preço/RSI existentes, passa entradas pelo `ode-risk` e kill-switch e grava carteiras/eventos paper no SQLite. Com `--strategy both` (padrão), cada estratégia tem **carteira virtual pUSD independente** para comparação; não é ensemble nem uma carteira combinada.
+
+```bash
+# Snapshot único público; encerra sem WebSocket e sem paper fill
+cargo run --release --bin polymarket-watch -- \
+  --slug 'SLUG-DO-MERCADO-CRYPTO' --outcome yes --once
+
+# Monitor contínuo + simulação paper; use o slug exato do mercado
+cargo run --release --bin polymarket-watch -- \
+  --slug 'SLUG-DO-MERCADO-CRYPTO' --outcome yes --interval 1m --strategy both
+```
+
+O comando exige escolha explícita de um mercado; não varre nem seleciona contratos automaticamente. Interpreta-se “cripto em dólar” como **mercados de previsão sobre cripto** cujas shares de outcome são cotadas em pUSD — não como compra de BTC/ETH spot. Os candles são derivados de pontos de preço/trades do outcome; não são OHLC spot, e divergência em dados sintéticos é apenas experimental. As duas contas são isoladas, o edge esperado não é estimado e a simulação não prova rentabilidade. Fills consomem profundidade como taker; fila, latência, impacto real e resolução do mercado não são reproduzidos.
+
+O adaptador não possui chave privada, autenticação de usuário, user channel nem endpoint de ordens. Para a região informada (Estados Unidos), Polymarket documenta acesso **close-only**; este trabalho permanece somente leitura/paper e não habilita abertura de posição. Guia, configuração e limitações: [`docs/setup-polymarket.md`](docs/setup-polymarket.md) e [`docs/phase-polymarket-paper-monitor.md`](docs/phase-polymarket-paper-monitor.md).
 
 ## ⚠️ Avisos importantes
 

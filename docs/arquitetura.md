@@ -90,3 +90,24 @@ intent persistido ──> POST único ──> resposta da venue
 ```
 
 `TradeSignal::validate_shape` verifica a forma do contrato antes que o sizing seja calculado. A idade do sinal e do mercado continua sendo responsabilidade contextual do `ode-risk`. `ExecutionSafety` não envia ordens: ele é um gate puro que impede novas intenções quando qualquer estado crítico é incerto. O resultado `Unknown` nunca é terminal e exige reconciliação explícita antes de outra ordem no mercado.
+
+## Fase C — monitor Polymarket somente leitura e paper
+
+```text
+Gamma + Data API (GET) ──> mercado/outcome + histórico de preço
+CLOB REST (GET) ─────────> snapshot book ─┐
+CLOB market WebSocket ───> book delta/trades ─> candle outcome (pUSD) ─> EMA / divergência
+                                                                   │
+                                                                   ▼
+                                                        ode-risk + kill-switch
+                                                                   │
+                                                                   ▼
+                                                   fill paper contra níveis do book
+                                                                   │
+                                                                   ▼
+                                                    AuditStore SQLite / JSONL stdout
+
+Autenticação de usuário/signing/POST de ordem: inexistentes neste caminho.
+```
+
+O crate `ode-polymarket` é somente leitura; o binário `polymarket-watch` é separado do `src/main.rs`, da Binance Spot Testnet e de seus segredos. Ele simula long-only shares YES/NO com contas persistentes independentes em pUSD, uma por estratégia/mercado/outcome/intervalo. O histórico em pontos vira candles OHLC sintéticos; trades públicos compõem candles live. Essas barras descrevem probabilidade de outcome, não preço spot do ativo citado. A simulação usa taxa conhecida e liquidez visível no book, sem prioridade de fila, latência futura ou execução na venue. Nos Estados Unidos, o escopo deliberado permanece leitura/paper; não há caminho de nova posição no Polymarket.
