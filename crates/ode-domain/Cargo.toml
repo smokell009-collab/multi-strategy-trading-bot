@@ -1,0 +1,9 @@
+[package]
+name = "ode-domain"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+rust_decimal = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }

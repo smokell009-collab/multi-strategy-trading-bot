@@ -1,6 +1,16 @@
+[workspace]
+members = [
+    ".",
+    "crates/ode-domain",
+    "crates/ode-events",
+    "crates/ode-risk",
+    "crates/ode-execution",
+]
+resolver = "3"
+
 [package]
 name = "olho-de-deus"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Bot de trading em paper mode com estratégia EMA e motor de risco independente"
 license = "MIT"
@@ -20,6 +30,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+ode-domain = { path = "crates/ode-domain" }
+ode-events = { path = "crates/ode-events" }
+ode-risk = { path = "crates/ode-risk" }
 
 [profile.release]
 strip = true
