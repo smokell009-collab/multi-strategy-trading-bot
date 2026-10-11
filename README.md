@@ -68,3 +68,16 @@ Lista completa (oficiais + community) em [`resources/links-uteis.md`](resources/
 ## 📜 Créditos
 
 Criado com **Grok** + **Lovable**. Repositórios de terceiros pertencem aos seus respectivos autores.
+
+
+## Bot Rust executável — primeiro MVP
+
+O repositório agora inclui um bot funcional de **paper trading**: consulta candles públicos da Binance, identifica cruzamentos EMA 9/21, aplica dimensionamento e limites determinísticos de risco e registra auditoria local. Ele não envia ordens reais nem precisa de chaves privadas.
+
+```bash
+cargo run --release -- --symbol BTCUSDT --interval 1m --once
+```
+
+Para executar em loop, remova `--once`. Guia completo, parâmetros, limitações e comandos de teste: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md). Os critérios de risco estão em [`configs/risk.paper.example.toml`](configs/risk.paper.example.toml).
+
+> **Importante:** é um MVP educacional de simulação, não uma estratégia validada nem recomendação de investimento. Estado e saldo paper reiniciam a cada execução. Não há execução real habilitada. Não use capital real com base neste projeto.

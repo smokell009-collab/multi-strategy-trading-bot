@@ -27,3 +27,8 @@ data/
 Thumbs.db
 .vscode/
 .idea/
+
+# Rust
+/target/
+# Auditoria local do paper trading (não versionar dados de execução)
+data/
