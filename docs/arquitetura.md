@@ -68,3 +68,25 @@ Produção: sem host, credencial, flag ou caminho de execução no binário.
 ```
 
 `ode-binance-testnet` tem URL-base constante para Spot Testnet, desativa redirects e sincroniza horário antes das requisições assinadas. A intenção é persistida antes do POST; resultado incerto vira estado não terminal e bloqueia nova ordem até reconciliação explícita por `clientOrderId`. O guard de mercado é transacional para processos concorrentes. Só há ordens `MARKET` manuais; não há integração automática da EMA, stop remoto ou execução em produção. Os testes usam mocks e não submetem ordens à exchange.
+
+
+## Fase 6 — contratos de segurança
+
+```text
+estratégia
+   │ TradeSignal::validate_shape
+   ▼
+ode-risk ── qualidade, idade, expiração, edge, slippage, sizing
+   │
+   ▼
+ExecutionSafety ── kill-switch / mercado / conta / reconciliação
+   │
+   ▼
+intent persistido ──> POST único ──> resposta da venue
+                                      │
+                         campos, status e fills comparados
+                                      ▼
+                          terminal ou revisão obrigatória
+```
+
+`TradeSignal::validate_shape` verifica a forma do contrato antes que o sizing seja calculado. A idade do sinal e do mercado continua sendo responsabilidade contextual do `ode-risk`. `ExecutionSafety` não envia ordens: ele é um gate puro que impede novas intenções quando qualquer estado crítico é incerto. O resultado `Unknown` nunca é terminal e exige reconciliação explícita antes de outra ordem no mercado.

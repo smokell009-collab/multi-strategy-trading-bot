@@ -7,3 +7,4 @@ license = "MIT"
 [dependencies]
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+thiserror = "2"

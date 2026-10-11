@@ -46,3 +46,14 @@
 - [ ] Revisão de segurança e autorização humana antes de qualquer consideração de execução em produção; produção não faz parte desta fase.
 
 **Fase 5 implementa apenas ordens de teste. Execução real continua fora do escopo e não existe host, flag ou caminho de ativação de produção no binário. A jurisdição do operador segue não informada.**
+
+## Fase 6 — contratos de segurança e execução
+
+- [x] Validar estruturalmente sinais antes do sizing, sem depender de LLM.
+- [x] Centralizar helpers para estados terminais e `Unknown` que exige reconciliação.
+- [x] Expor gate determinístico que bloqueia kill-switch, mercado/conta incertos e reconciliação pendente.
+- [x] Integrar o gate ao fluxo manual da Binance Spot Testnet sem ampliar o escopo de venue.
+- [x] Documentar checklist de prontidão, segurança, ameaças, política de risco e ciclo de execução.
+- [ ] Implementar reconciliador agregado de posições com fixtures de reinicialização, divergência e cancelamento seguro.
+
+**Fase 6 reforça contratos e governança; não adiciona estratégias, não envia ordens durante os testes e não cria caminho de produção.** Critérios e evidências: [`CHECKLIST.md`](CHECKLIST.md) e [`docs/phase-6-safety-contracts.md`](docs/phase-6-safety-contracts.md).

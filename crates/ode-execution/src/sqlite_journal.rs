@@ -407,10 +407,7 @@ fn validate_client_order_id(id: &str) -> Result<(), JournalError> {
 }
 
 fn is_terminal(status: OrderStatus) -> bool {
-    matches!(
-        status,
-        OrderStatus::Filled | OrderStatus::Cancelled | OrderStatus::Rejected
-    )
+    status.is_terminal()
 }
 
 fn valid_utc_day(day: &str) -> bool {

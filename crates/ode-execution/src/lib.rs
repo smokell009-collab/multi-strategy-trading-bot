@@ -51,6 +51,45 @@ pub enum RegisterError {
     IdempotencyConflict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionSafety {
+    pub kill_switch_active: bool,
+    pub market_state_known: bool,
+    pub account_state_known: bool,
+    pub reconciliation_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ExecutionBlockReason {
+    #[error("kill-switch ativo")]
+    KillSwitchActive,
+    #[error("estado do mercado incerto")]
+    MarketStateUnknown,
+    #[error("estado da conta incerto")]
+    AccountStateUnknown,
+    #[error("reconciliação obrigatória antes de nova ordem")]
+    ReconciliationRequired,
+}
+
+impl ExecutionSafety {
+    /// Autoriza somente a intenção de criar uma nova ordem; não envia nada à venue.
+    pub fn authorize_new_order(&self) -> Result<(), ExecutionBlockReason> {
+        if self.kill_switch_active {
+            return Err(ExecutionBlockReason::KillSwitchActive);
+        }
+        if !self.market_state_known {
+            return Err(ExecutionBlockReason::MarketStateUnknown);
+        }
+        if !self.account_state_known {
+            return Err(ExecutionBlockReason::AccountStateUnknown);
+        }
+        if self.reconciliation_required {
+            return Err(ExecutionBlockReason::ReconciliationRequired);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconciliationIssue {
     LocalOrderMissingAtVenue(String),
@@ -280,5 +319,50 @@ mod tests {
                 "duplicate".into()
             ))
         );
+    }
+
+    #[test]
+    fn execution_safety_blocks_each_uncertain_state_and_allows_ready_state() {
+        let ready = ExecutionSafety {
+            kill_switch_active: false,
+            market_state_known: true,
+            account_state_known: true,
+            reconciliation_required: false,
+        };
+        assert_eq!(ready.authorize_new_order(), Ok(()));
+
+        let cases = [
+            (
+                ExecutionSafety {
+                    kill_switch_active: true,
+                    ..ready
+                },
+                ExecutionBlockReason::KillSwitchActive,
+            ),
+            (
+                ExecutionSafety {
+                    market_state_known: false,
+                    ..ready
+                },
+                ExecutionBlockReason::MarketStateUnknown,
+            ),
+            (
+                ExecutionSafety {
+                    account_state_known: false,
+                    ..ready
+                },
+                ExecutionBlockReason::AccountStateUnknown,
+            ),
+            (
+                ExecutionSafety {
+                    reconciliation_required: true,
+                    ..ready
+                },
+                ExecutionBlockReason::ReconciliationRequired,
+            ),
+        ];
+        for (safety, expected) in cases {
+            assert_eq!(safety.authorize_new_order(), Err(expected));
+        }
     }
 }

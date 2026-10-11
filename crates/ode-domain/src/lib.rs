@@ -1,6 +1,7 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use thiserror::Error;
 
 macro_rules! string_id {
     ($name:ident) => {
@@ -73,6 +74,51 @@ pub struct TradeSignal {
     pub expires_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SignalValidationError {
+    #[error("strategy_id não pode ser vazio")]
+    EmptyStrategyId,
+    #[error("market_id não pode ser vazio")]
+    EmptyMarketId,
+    #[error("probabilidade estimada deve estar entre 0 e 1")]
+    InvalidProbability,
+    #[error("slippage máximo do sinal excede 10000 bps")]
+    InvalidSlippage,
+    #[error("timestamps do sinal não podem ser negativos")]
+    InvalidTimestamp,
+    #[error("expiração do sinal deve ser igual ou posterior ao timestamp do sinal")]
+    InvalidExpiry,
+}
+
+impl TradeSignal {
+    /// Valida apenas a forma do contrato; idade e expiração relativa ao relógio
+    /// são gates do motor de risco, que possui o contexto de execução.
+    pub fn validate_shape(&self) -> Result<(), SignalValidationError> {
+        if self.strategy_id.0.trim().is_empty() {
+            return Err(SignalValidationError::EmptyStrategyId);
+        }
+        if self.market_id.0.trim().is_empty() {
+            return Err(SignalValidationError::EmptyMarketId);
+        }
+        if self
+            .estimated_probability
+            .is_some_and(|probability| !(Decimal::ZERO..=Decimal::ONE).contains(&probability))
+        {
+            return Err(SignalValidationError::InvalidProbability);
+        }
+        if self.max_slippage_bps > 10_000 {
+            return Err(SignalValidationError::InvalidSlippage);
+        }
+        if self.signal_timestamp_ms < 0 || self.expires_at_ms < 0 {
+            return Err(SignalValidationError::InvalidTimestamp);
+        }
+        if self.expires_at_ms < self.signal_timestamp_ms {
+            return Err(SignalValidationError::InvalidExpiry);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketSnapshot {
     pub market_id: MarketId,
@@ -131,4 +177,58 @@ pub enum OrderStatus {
     Filled,
     Cancelled,
     Rejected,
+}
+
+impl OrderStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Filled | Self::Cancelled | Self::Rejected)
+    }
+
+    /// `Unknown` é deliberadamente tratado como estado que exige reconciliação.
+    pub fn requires_reconciliation(self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signal() -> TradeSignal {
+        TradeSignal {
+            strategy_id: StrategyId::from("ema_crossover"),
+            market_id: MarketId::from("BTCUSDT"),
+            direction: Direction::Buy,
+            estimated_probability: Some(Decimal::new(3, 1)),
+            expected_net_edge_bps: 10,
+            max_slippage_bps: 5,
+            signal_timestamp_ms: 100,
+            expires_at_ms: 200,
+        }
+    }
+
+    #[test]
+    fn signal_shape_accepts_bounded_probability_and_order_status_helpers_are_explicit() {
+        assert!(signal().validate_shape().is_ok());
+        assert!(OrderStatus::Filled.is_terminal());
+        assert!(OrderStatus::Unknown.requires_reconciliation());
+        assert!(!OrderStatus::Open.is_terminal());
+    }
+
+    #[test]
+    fn signal_shape_rejects_invalid_probability_and_expiry() {
+        let mut invalid_probability = signal();
+        invalid_probability.estimated_probability = Some(Decimal::new(11, 1));
+        assert_eq!(
+            invalid_probability.validate_shape(),
+            Err(SignalValidationError::InvalidProbability)
+        );
+
+        let mut invalid_expiry = signal();
+        invalid_expiry.expires_at_ms = 99;
+        assert_eq!(
+            invalid_expiry.validate_shape(),
+            Err(SignalValidationError::InvalidExpiry)
+        );
+    }
 }

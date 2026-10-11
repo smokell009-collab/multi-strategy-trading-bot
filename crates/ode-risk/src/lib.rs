@@ -187,6 +187,9 @@ impl RiskEngine {
         if input.kill_switch_active {
             return Err(RiskRejection::KillSwitchActive);
         }
+        if input.signal.validate_shape().is_err() {
+            return Err(RiskRejection::InvalidSignal);
+        }
         if input.signal.direction != Direction::Buy {
             return Err(RiskRejection::NotAnEntrySignal);
         }
@@ -308,6 +311,8 @@ pub enum RiskRejection {
     StaleMarketData,
     #[error("sinal expirado ou com timestamps inválidos")]
     ExpiredSignal,
+    #[error("contrato do sinal inválido")]
+    InvalidSignal,
     #[error("edge esperado inferior ao mínimo configurado")]
     InsufficientExpectedEdge,
     #[error("slippage acima do limite do sinal ou da política")]
@@ -493,6 +498,25 @@ mod tests {
                 execution_slippage_bps: 5,
             }),
             Err(RiskRejection::StaleMarketData)
+        );
+    }
+
+    #[test]
+    fn malformed_signal_is_rejected_before_sizing() {
+        let engine = engine(RiskPolicy::default());
+        let (mut signal, market, portfolio) =
+            fixtures(Decimal::from(100), Decimal::from(10_000), 1_000);
+        signal.estimated_probability = Some(Decimal::from(2));
+        assert_eq!(
+            engine.authorize_entry(RiskInput {
+                signal: &signal,
+                market: &market,
+                portfolio: &portfolio,
+                now_ms: 1_000,
+                kill_switch_active: false,
+                execution_slippage_bps: 5,
+            }),
+            Err(RiskRejection::InvalidSignal)
         );
     }
 

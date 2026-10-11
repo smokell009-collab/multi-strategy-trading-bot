@@ -7,7 +7,7 @@ use ode_domain::{
     StrategyId, TradeSignal,
 };
 use ode_execution::{
-    JournalError, OrderIntent, PersistedOrder, RegisterOutcome, SqliteOrderJournal,
+    ExecutionSafety, JournalError, OrderIntent, PersistedOrder, RegisterOutcome, SqliteOrderJournal,
 };
 use ode_risk::{RiskInput, RiskPolicy};
 use rust_decimal::Decimal;
@@ -163,6 +163,13 @@ async fn run_market_order(
         )
     })?;
     ensure_no_unresolved_order(&journal, &args.symbol)?;
+    let kill_switch_active = ode_risk::KillSwitch::new(&args.kill_switch_file).is_active()?;
+    let safety = ExecutionSafety {
+        kill_switch_active,
+        market_state_known: true,
+        account_state_known: true,
+        reconciliation_required: false,
+    };
     let session_date = Utc::now().date_naive().to_string();
     let session_start_equity = journal.risk_session_start(
         &format!("binance-spot-testnet:{}", args.symbol),
@@ -177,9 +184,9 @@ async fn run_market_order(
                     "já existe saldo base suficiente para uma posição neste par; venda/reconcilie antes de nova entrada"
                 );
             }
-            if ode_risk::KillSwitch::new(&args.kill_switch_file).is_active()? {
-                bail!("kill-switch ativo; compra Testnet bloqueada");
-            }
+            safety
+                .authorize_new_order()
+                .map_err(|reason| anyhow::anyhow!(reason.to_string()))?;
             let now_ms = Utc::now().timestamp_millis();
             let signal = TradeSignal {
                 strategy_id: StrategyId::from("manual_testnet_order"),
@@ -433,10 +440,7 @@ fn valid_testnet_client_order_id(id: &str) -> bool {
 }
 
 fn is_terminal(status: OrderStatus) -> bool {
-    matches!(
-        status,
-        OrderStatus::Filled | OrderStatus::Cancelled | OrderStatus::Rejected
-    )
+    status.is_terminal()
 }
 
 fn ensure_no_unresolved_order(journal: &SqliteOrderJournal, symbol: &str) -> Result<()> {

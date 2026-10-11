@@ -137,6 +137,12 @@ cargo run --release -- --symbol BTCUSDT \
 
 O journal grava a intenção antes do POST, impede reenvio idempotente, bloqueia novas ordens no mesmo símbolo enquanto houver estado `pending/open/partially_filled/unknown` e serializa essa exclusão mútua no SQLite. **Não apague nem troque o arquivo do journal** enquanto houver ordem pendente/incerta; isso removeria a proteção local contra duplicação. O cliente não faz retry automático. O desenvolvimento foi validado com mocks; nenhuma ordem Testnet ou real foi enviada durante esta implementação. Veja o [escopo e as limitações da Fase 5](docs/phase-5-binance-testnet-scope.md).
 
+## Fase 6 — contratos de segurança e execução
+
+O domínio agora valida a forma de cada `TradeSignal` antes do sizing, incluindo IDs, probabilidade, slippage e janela temporal. O motor de risco transforma sinais malformados em rejeições determinísticas e continua independente de qualquer IA. O crate de execução expõe um gate reutilizável que bloqueia novas ordens quando o kill-switch, o estado do mercado, o estado da conta ou a reconciliação não são confiáveis. O caminho manual da Spot Testnet usa esse gate e mantém a verificação final do kill-switch imediatamente antes do POST.
+
+Esta fase também registra a prontidão real do projeto em [`CHECKLIST.md`](CHECKLIST.md), a política de segurança em [`SECURITY.md`](SECURITY.md), o [modelo de ameaças](docs/threat-model.md), a [política de risco](docs/risk-policy.md) e o [ciclo de execução](docs/execution-lifecycle.md). Ela não adiciona produção, não habilita novas venues e não declara estratégias futuras como implementadas.
+
 ## ⚠️ Avisos importantes
 
 - **Paper trading / testnet primeiro. Sempre.**
