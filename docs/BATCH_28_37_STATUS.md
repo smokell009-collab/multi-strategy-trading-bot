@@ -8,7 +8,7 @@ Este status descreve a branch `main` realmente disponível nesta sessão, não a
 
 | Req. | Tema | Estado observado | Próxima evidência necessária |
 |---|---|---|---|
-| 28 | Divergência preço-RSI | **Parcial — implementação local nesta entrega.** Núcleo determinístico, configuração off por padrão, testes causais, seletor de holdout e proveniência de estratégia adicionados. Walk-forward não existe no baseline. | Validar suíte completa; implementar e testar integração com walk-forward quando essa infraestrutura existir; depois revisar critérios e métricas. |
+| 28 | Divergência preço-RSI | **Parcial — commit `817f2ce` publicado em `main`.** Núcleo determinístico, configuração off por padrão, testes causais, seletor de holdout e proveniência de estratégia foram implementados e validados localmente. Walk-forward não existe no baseline. | Implementar e testar integração com walk-forward quando essa infraestrutura existir; depois revisar critérios e métricas. |
 | 29 | Momentum | Não iniciado; ROC, volatilidade realizada e volume relativo ainda não são estratégia implementada. | Contrato OHLCV explícito, limites, configuração e teste de backtest sem inventar spread/profundidade/DHS. |
 | 30 | Order Blocks | Não iniciado. | Aprovar/documentar definição v1 antes do código e testar timestamps de confirmação/invalidação. |
 | 31 | Fair Value Gaps | Não iniciado. | Estado monotônico em prefixos causais, sem confundir gap de mercado com lacuna de cadência. |
@@ -25,4 +25,4 @@ A divergência é selecionável exclusivamente pelo backtest. A config de exempl
 
 ## Estado do commit/push
 
-Preencher após rodar todos os gates locais e consultar o CI remoto. Não marcar `DONE_VERIFIED` apenas por documentação, compilação parcial ou existência de um trait.
+O commit `817f2ce` (`feat: add causal price-rsi divergence backtest`) foi publicado em `main`. Os gates locais passaram: formatação, 64 testes, Clippy com `-D warnings` e `git diff --check`. O GitHub Actions do commit de código estava **queued** na consulta: [workflow Rust CI](https://github.com/smokell009-collab/multi-strategy-trading-bot/actions/runs/38135998438). Não marcar `DONE_VERIFIED`: a integração walk-forward permanece pendente.
