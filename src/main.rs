@@ -11,7 +11,7 @@ use ode_market_data::{DataQualityReport, read_csv, validate_candles};
 use ode_model_adapter::OpenAiCompatibleAdapter;
 use ode_observability::{AuditStore, BotStatus, spawn_dashboard};
 use ode_risk::{KillSwitch, RiskEngine, RiskInput, RiskLimits, RiskPolicy};
-use ode_strategy_technical::{EmaCrossover, StrategiesConfig, Strategy};
+use ode_strategy_technical::{EmaCrossover, PriceRsiDivergence, StrategiesConfig, Strategy};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -76,6 +76,9 @@ struct Args {
     /// CSV OHLCV histórico: executa holdout cronológico e não consulta a Binance.
     #[arg(long)]
     backtest_csv: Option<PathBuf>,
+    /// Estratégia selecionada somente para --backtest-csv; o loop paper continua usando EMA.
+    #[arg(long, value_enum, default_value_t = BacktestStrategy::EmaCrossover)]
+    backtest_strategy: BacktestStrategy,
     /// Fração inicial in-sample (0.70 = primeiros 70%; último trecho é OOS; sem ajuste automático).
     #[arg(long = "in-sample-ratio", default_value = "0.7")]
     in_sample_ratio: Decimal,
@@ -145,6 +148,12 @@ enum TestnetCommand {
 enum TestnetSide {
     Buy,
     Sell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BacktestStrategy {
+    EmaCrossover,
+    PriceRsiDivergence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +514,11 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.in_sample_ratio < Decimal::new(5, 1) || args.in_sample_ratio > Decimal::new(9, 1) {
         bail!("in-sample-ratio deve estar entre 0.5 e 0.9");
     }
+    if args.backtest_strategy != BacktestStrategy::EmaCrossover && args.backtest_csv.is_none() {
+        bail!(
+            "--backtest-strategy só pode ser usado junto com --backtest-csv; o modo paper permanece EMA"
+        );
+    }
     if args.dashboard && (args.once || args.backtest_csv.is_some()) {
         bail!(
             "--dashboard requer loop paper contínuo; não pode ser usado com --once ou --backtest-csv"
@@ -692,8 +706,6 @@ async fn main() -> Result<()> {
                 args.strategy_config.display()
             )
         })?;
-    let strategy = EmaCrossover::new(strategy_config.ema_crossover)
-        .context("configuração da estratégia EMA inválida")?;
     let policy = RiskPolicy::from_path(&args.risk_overrides).with_context(|| {
         format!(
             "não foi possível carregar overrides em {}",
@@ -701,6 +713,16 @@ async fn main() -> Result<()> {
         )
     })?;
     if let Some(csv_path) = &args.backtest_csv {
+        let strategy: Box<dyn Strategy> = match args.backtest_strategy {
+            BacktestStrategy::EmaCrossover => Box::new(
+                EmaCrossover::new(strategy_config.ema_crossover.clone())
+                    .context("configuração da estratégia EMA inválida")?,
+            ),
+            BacktestStrategy::PriceRsiDivergence => Box::new(
+                PriceRsiDivergence::new(strategy_config.price_rsi_divergence.clone())
+                    .context("configuração de divergência preço/RSI inválida")?,
+            ),
+        };
         let period_ms = interval_millis(&args.interval).context("intervalo inválido")?;
         let (candles, _) = read_csv(
             File::open(csv_path).with_context(|| {
@@ -711,7 +733,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("histórico CSV inválido: {}", csv_path.display()))?;
         let report = run_out_of_sample(
             &candles,
-            &strategy,
+            strategy.as_ref(),
             &BacktestConfig {
                 starting_balance: args.starting_balance,
                 risk_limits: risk_limits(&args)?,
@@ -740,6 +762,8 @@ async fn main() -> Result<()> {
         println!("{report_json}");
         return Ok(());
     }
+    let strategy = EmaCrossover::new(strategy_config.ema_crossover)
+        .context("configuração da estratégia EMA inválida")?;
     let risk_engine = risk_engine(&args, policy)?;
     let store = AuditStore::open(&args.audit_db).with_context(|| {
         format!(
@@ -955,6 +979,7 @@ mod tests {
             slippage_bps: 5,
             strategy_config: PathBuf::from("configs/strategies.example.toml"),
             backtest_csv: None,
+            backtest_strategy: BacktestStrategy::EmaCrossover,
             in_sample_ratio: Decimal::new(7, 1),
             backtest_report: None,
             audit_db: PathBuf::from("data/test-olho.sqlite3"),
@@ -968,6 +993,16 @@ mod tests {
             testnet_orders_db: PathBuf::from("data/testnet-orders.sqlite3"),
             testnet_command: None,
         }
+    }
+
+    #[test]
+    fn divergence_selector_is_backtest_only_and_ema_remains_the_default() {
+        let mut args = test_args();
+        assert_eq!(args.backtest_strategy, BacktestStrategy::EmaCrossover);
+        args.backtest_strategy = BacktestStrategy::PriceRsiDivergence;
+        assert!(validate_args(&args).is_err());
+        args.backtest_csv = Some(PathBuf::from("sample.csv"));
+        assert!(validate_args(&args).is_ok());
     }
 
     fn test_engine(args: &Args) -> RiskEngine {

@@ -22,9 +22,15 @@ A configuração de exemplo é [`configs/strategies.example.toml`](../configs/st
 enabled = true
 fast_period = 9
 slow_period = 21
+
+[price_rsi_divergence]
+enabled = false
+rsi_period = 14
+pivot_left_bars = 2
+pivot_right_bars = 2
 ```
 
-Defina `enabled = false` para desativar a EMA sem mexer nos gates de risco ou no feed. O código da estratégia só recebe candles fechados e não controla risco nem execução. A arquitetura permite módulos independentes; **EMA é a única estratégia implementada nesta versão**.
+Defina `enabled = false` para desativar a EMA sem mexer nos gates de risco ou no feed. A divergência permanece desligada por padrão e é selecionável apenas com `--backtest-csv --backtest-strategy price-rsi-divergence`; não está conectada ao loop paper. Ambas as estratégias recebem apenas candles fechados e não controlam risco nem execução. O detector RSI/preço marca invalidação por rompimento do extremo do segundo pivô e não estima probabilidade. Walk-forward ainda não existe nesta branch.
 
 ## Backtest OOS a partir de CSV
 

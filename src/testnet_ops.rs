@@ -555,6 +555,7 @@ mod tests {
             slippage_bps: 5,
             strategy_config: "configs/strategies.example.toml".into(),
             backtest_csv: None,
+            backtest_strategy: crate::BacktestStrategy::EmaCrossover,
             in_sample_ratio: Decimal::new(7, 1),
             backtest_report: None,
             audit_db: "data/test.sqlite3".into(),

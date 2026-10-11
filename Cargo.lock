@@ -977,6 +977,7 @@ dependencies = [
  "ode-strategy-technical",
  "rust_decimal",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -1093,6 +1094,7 @@ dependencies = [
  "ode-domain",
  "rust_decimal",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
 ]

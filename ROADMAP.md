@@ -57,3 +57,14 @@
 - [ ] Implementar reconciliador agregado de posições com fixtures de reinicialização, divergência e cancelamento seguro.
 
 **Fase 6 reforça contratos e governança; não adiciona estratégias, não envia ordens durante os testes e não cria caminho de produção.** Critérios e evidências: [`CHECKLIST.md`](CHECKLIST.md) e [`docs/phase-6-safety-contracts.md`](docs/phase-6-safety-contracts.md).
+
+## Lote 28–37 — primeira fatia do requisito 28
+
+- [x] Núcleo de divergência preço/RSI com pivôs estritos e confirmação atrasada no crate técnico.
+- [x] Configuração TOML `price_rsi_divergence` desativada por padrão.
+- [x] Seletor exclusivo do backtest; o modo paper continua usando apenas EMA.
+- [x] Testes de bullish/bearish, histórico insuficiente, dados inválidos, empate, look-ahead, invalidação e não repetição.
+- [x] O relatório grava ID, versão e parâmetros da estratégia selecionada.
+- [ ] Integração com walk-forward: infraestrutura não localizada nesta branch e não será simulada como concluída.
+
+Estado e decisões reais: [`docs/BATCH_28_37_STATUS.md`](docs/BATCH_28_37_STATUS.md), [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) e [`docs/ARCHITECTURE_DECISIONS.md`](docs/ARCHITECTURE_DECISIONS.md). Este requisito permanece parcial até validação completa e integração walk-forward.

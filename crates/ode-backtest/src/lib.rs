@@ -83,6 +83,8 @@ pub struct CompletedTrade {
 #[derive(Debug, Clone, Serialize)]
 pub struct BacktestReport {
     pub strategy_id: String,
+    pub strategy_version: String,
+    pub strategy_parameters: serde_json::Value,
     pub bars: usize,
     pub in_sample_start_ms: i64,
     pub in_sample_end_ms: i64,
@@ -168,6 +170,8 @@ pub fn run_out_of_sample(
 
     Ok(BacktestReport {
         strategy_id: strategy.id().to_owned(),
+        strategy_version: strategy.version().to_owned(),
+        strategy_parameters: strategy.parameters(),
         bars: candles.len(),
         in_sample_start_ms: candles[0].open_time_ms,
         in_sample_end_ms: candles[split_index - 1].close_time_ms,
@@ -466,7 +470,9 @@ fn pct(fraction: Decimal) -> Decimal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ode_strategy_technical::{EmaCrossover, EmaCrossoverConfig};
+    use ode_strategy_technical::{
+        DivergenceConfig, EmaCrossover, EmaCrossoverConfig, PriceRsiDivergence,
+    };
 
     fn candles() -> Vec<Candle> {
         let closes = [
@@ -546,5 +552,22 @@ mod tests {
         let mut config = test_config();
         config.risk_limits.risk_per_trade = Decimal::new(2, 1);
         assert!(run_out_of_sample(&candles(), &test_strategy(), &config).is_err());
+    }
+
+    #[test]
+    fn price_rsi_divergence_runs_only_when_explicitly_selected_and_records_parameters() {
+        let strategy = PriceRsiDivergence::new(DivergenceConfig {
+            enabled: true,
+            rsi_period: 3,
+            pivot_left_bars: 1,
+            pivot_right_bars: 1,
+        })
+        .unwrap();
+        let report = run_out_of_sample(&candles(), &strategy, &test_config()).unwrap();
+        assert_eq!(report.strategy_id, "price_rsi_divergence");
+        assert_eq!(report.strategy_version, "1.0.0");
+        assert_eq!(report.strategy_parameters["enabled"], true);
+        assert_eq!(report.strategy_parameters["rsi_period"], 3);
+        assert_eq!(report.bars, 40);
     }
 }

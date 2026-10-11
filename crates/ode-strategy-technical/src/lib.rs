@@ -1,8 +1,13 @@
 use ode_domain::{Candle, Direction};
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 use thiserror::Error;
+
+mod divergence;
+pub use divergence::{
+    DivergenceAnalysis, DivergenceConfig, DivergenceDirection, DivergenceSignal, PriceRsiDivergence,
+};
 
 #[derive(Debug, Error)]
 pub enum StrategyConfigError {
@@ -12,6 +17,8 @@ pub enum StrategyConfigError {
     Toml(#[from] toml::de::Error),
     #[error("parâmetros EMA inválidos; exija 0 < fast_period < slow_period <= 500")]
     InvalidPeriods,
+    #[error("parâmetros de divergência inválidos; RSI deve estar em 2..=500 e pivôs em 1..=100")]
+    InvalidDivergenceParameters,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -19,9 +26,11 @@ pub enum StrategyConfigError {
 pub struct StrategiesConfig {
     #[serde(default)]
     pub ema_crossover: EmaCrossoverConfig,
+    #[serde(default)]
+    pub price_rsi_divergence: DivergenceConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EmaCrossoverConfig {
     pub enabled: bool,
@@ -43,6 +52,7 @@ impl StrategiesConfig {
     pub fn from_toml(input: &str) -> Result<Self, StrategyConfigError> {
         let config: Self = toml::from_str(input)?;
         config.ema_crossover.validate()?;
+        config.price_rsi_divergence.validate()?;
         Ok(config)
     }
 
@@ -63,6 +73,8 @@ impl EmaCrossoverConfig {
 /// Contrato puro: avalia somente o histórico fechado recebido e não acessa feed, risco ou execução.
 pub trait Strategy: Send + Sync {
     fn id(&self) -> &'static str;
+    fn version(&self) -> &'static str;
+    fn parameters(&self) -> serde_json::Value;
     fn enabled(&self) -> bool;
     fn min_history_len(&self) -> usize;
     fn evaluate(&self, closed_history: &[Candle]) -> Direction;
@@ -93,6 +105,14 @@ impl Default for EmaCrossover {
 impl Strategy for EmaCrossover {
     fn id(&self) -> &'static str {
         "ema_crossover"
+    }
+
+    fn version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::to_value(&self.config).expect("EMA config is serializable")
     }
 
     fn enabled(&self) -> bool {
@@ -197,6 +217,19 @@ mod tests {
                 slow_period: 9
             })
             .is_err()
+        );
+    }
+
+    #[test]
+    fn missing_divergence_section_defaults_to_disabled_and_invalid_parameters_fail_closed() {
+        let config = StrategiesConfig::from_toml(
+            "[ema_crossover]\nenabled = true\nfast_period = 9\nslow_period = 21\n",
+        )
+        .unwrap();
+        assert!(!config.price_rsi_divergence.enabled);
+        assert!(
+            StrategiesConfig::from_toml("[price_rsi_divergence]\nenabled = true\nrsi_period = 1\n")
+                .is_err()
         );
     }
 }

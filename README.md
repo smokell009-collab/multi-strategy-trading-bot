@@ -143,6 +143,22 @@ O domínio agora valida a forma de cada `TradeSignal` antes do sizing, incluindo
 
 Esta fase também registra a prontidão real do projeto em [`CHECKLIST.md`](CHECKLIST.md), a política de segurança em [`SECURITY.md`](SECURITY.md), o [modelo de ameaças](docs/threat-model.md), a [política de risco](docs/risk-policy.md) e o [ciclo de execução](docs/execution-lifecycle.md). Ela não adiciona produção, não habilita novas venues e não declara estratégias futuras como implementadas.
 
+## Requisito 28 — divergência preço/RSI (somente backtest)
+
+O detector usa pivôs estritos e RSI Wilder conhecido até o candle do pivô; só confirma depois do fechamento de `pivot_right_bars`. Empates não contam, lower-low/higher-low gera candidato bullish e higher-high/lower-high gera bearish. A saída não inclui probabilidade inventada; o rompimento do extremo do segundo pivô marca o setup como invalidado. A configuração em [`configs/strategies.example.toml`](configs/strategies.example.toml) vem com `enabled = false`.
+
+Para selecioná-la explicitamente:
+
+```bash
+cargo run --release -- \
+  --backtest-csv data/BTCUSDT-1m.csv \
+  --backtest-strategy price-rsi-divergence \
+  --strategy-config configs/strategies.example.toml \
+  --backtest-report data/divergence-report.json
+```
+
+Edite `enabled = true` na seção `[price_rsi_divergence]` somente para essa análise. O seletor só é aceito junto de `--backtest-csv`; o loop paper permanece conectado à EMA 9/21. O relatório registra ID, versão algorítmica e parâmetros serializados. Esta branch não contém walk-forward nem fingerprint do dataset; portanto a integração completa do requisito 28 continua pendente e os resultados do holdout não demonstram edge ou rentabilidade futura. Veja [`docs/BATCH_28_37_STATUS.md`](docs/BATCH_28_37_STATUS.md).
+
 ## ⚠️ Avisos importantes
 
 - **Paper trading / testnet primeiro. Sempre.**

@@ -4,3 +4,10 @@
 enabled = true
 fast_period = 9
 slow_period = 21
+
+# Requisito 28 — somente backtest; não é conectado ao loop paper.
+[price_rsi_divergence]
+enabled = false
+rsi_period = 14
+pivot_left_bars = 2
+pivot_right_bars = 2
