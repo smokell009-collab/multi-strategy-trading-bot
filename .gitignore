@@ -1,0 +1,29 @@
+# Segredos
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+keys/
+claude_desktop_config.json
+# Node
+node_modules/
+npm-debug.log*
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+# MCPs clonados localmente
+external/
+# Logs e dados
+logs/
+*.log
+data/
+*.sqlite
+# SO / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
