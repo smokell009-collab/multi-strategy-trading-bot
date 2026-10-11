@@ -1,0 +1,9 @@
+[package]
+name = "ode-execution"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+ode-domain = { path = "../ode-domain" }
+rust_decimal = { version = "1", features = ["serde"] }

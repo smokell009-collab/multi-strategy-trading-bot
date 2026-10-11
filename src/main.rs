@@ -1,13 +1,19 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::Parser;
+use ode_domain::{
+    Candle, DataQuality, Direction, MarketId, MarketSnapshot, PortfolioSnapshot, StrategyId,
+    TradeSignal,
+};
+use ode_events::AuditEvent;
+use ode_risk::{KillSwitch, RiskEngine, RiskInput, RiskLimits, RiskPolicy};
 use reqwest::Client;
 use rust_decimal::Decimal;
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
+    path::PathBuf,
     str::FromStr,
     time::Duration,
 };
@@ -56,16 +62,18 @@ struct Args {
     /// Slippage simulado em basis points; 5 = 0,05%.
     #[arg(long, default_value_t = 5)]
     slippage_bps: u32,
+    /// Arquivo TOML com overrides por estratégia e por ativo.
+    #[arg(long, default_value = "configs/risk-overrides.example.toml")]
+    risk_overrides: PathBuf,
+    /// Arquivo persistente do kill-switch. Se existir e for válido, bloqueia novas entradas.
+    #[arg(long, default_value = "data/KILL_SWITCH.json")]
+    kill_switch_file: PathBuf,
+    /// Ativa o kill-switch com o motivo informado e encerra; não há flag de desativação.
+    #[arg(long)]
+    activate_kill_switch: Option<String>,
     /// Faz uma consulta e termina; útil para smoke tests.
     #[arg(long, default_value_t = false)]
     once: bool,
-}
-
-#[derive(Debug, Clone)]
-struct Candle {
-    open_time_ms: i64,
-    close_time_ms: i64,
-    close: Decimal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,17 +88,12 @@ struct PaperBroker {
     cash: Decimal,
     quantity: Decimal,
     entry_price: Option<Decimal>,
+    stop_price: Option<Decimal>,
     entry_fee: Decimal,
+    entry_fee_bps: u32,
+    position_slippage_bps: u32,
     start_equity: Decimal,
     audit_path: String,
-}
-
-#[derive(Serialize)]
-struct AuditRecord {
-    timestamp: String,
-    event: String,
-    symbol: String,
-    details: Value,
 }
 
 impl PaperBroker {
@@ -99,7 +102,10 @@ impl PaperBroker {
             cash: balance,
             quantity: Decimal::ZERO,
             entry_price: None,
+            stop_price: None,
             entry_fee: Decimal::ZERO,
+            entry_fee_bps: 0,
+            position_slippage_bps: 0,
             start_equity: balance,
             audit_path,
         }
@@ -113,13 +119,8 @@ impl PaperBroker {
         self.cash + self.quantity * mark_price
     }
 
-    fn record(&self, event: &str, symbol: &str, details: Value) -> Result<()> {
-        let record = AuditRecord {
-            timestamp: Utc::now().to_rfc3339(),
-            event: event.to_owned(),
-            symbol: symbol.to_owned(),
-            details,
-        };
+    fn record(&self, event_type: &str, market_id: &str, details: Value) -> Result<()> {
+        let event = AuditEvent::new(event_type, MarketId::from(market_id), details);
         if let Some(parent) = std::path::Path::new(&self.audit_path).parent() {
             fs::create_dir_all(parent).context("não foi possível criar a pasta de auditoria")?;
         }
@@ -128,30 +129,31 @@ impl PaperBroker {
             .append(true)
             .open(&self.audit_path)
             .with_context(|| format!("não foi possível abrir {}", self.audit_path))?;
-        serde_json::to_writer(&mut file, &record)?;
+        serde_json::to_writer(&mut file, &event)?;
         file.write_all(b"\n")?;
         Ok(())
     }
 
-    fn on_candle(&mut self, args: &Args, signal: Signal, candle: &Candle) -> Result<()> {
+    fn on_candle(
+        &mut self,
+        args: &Args,
+        signal: Signal,
+        candle: &Candle,
+        risk_engine: &RiskEngine,
+        kill_switch_active: bool,
+    ) -> Result<()> {
         let price = candle.close;
         let equity = self.equity(price);
-        let daily_floor = self.start_equity * (Decimal::ONE - args.max_daily_loss);
-        let daily_loss_locked = equity <= daily_floor;
-        let stop_price = self
-            .entry_price
-            .map(|entry| entry * (Decimal::ONE - args.stop_loss));
-        let stop_hit = stop_price.is_some_and(|stop| price <= stop);
-
+        let stop_hit = self.stop_price.is_some_and(|stop| price <= stop);
         self.record(
-            "signal",
+            "signal_observed",
             &args.symbol,
             json!({
                 "signal": format!("{signal:?}"),
                 "close": price.to_string(),
                 "candle_close_time_ms": candle.close_time_ms,
                 "equity": equity.to_string(),
-                "daily_loss_locked": daily_loss_locked,
+                "kill_switch_active": kill_switch_active,
             }),
         )?;
 
@@ -163,85 +165,79 @@ impl PaperBroker {
             };
             return self.close_position(args, price, reason);
         }
-
-        if signal == Signal::Buy {
-            if self.has_position() {
-                self.record(
-                    "entry_rejected",
-                    &args.symbol,
-                    json!({"reason":"position_already_open"}),
-                )?;
-                return Ok(());
-            }
-            if daily_loss_locked {
-                self.record(
-                    "entry_rejected",
-                    &args.symbol,
-                    json!({"reason":"daily_loss_limit"}),
-                )?;
-                warn!("entrada bloqueada: limite de perda diária atingido");
-                return Ok(());
-            }
-            self.open_position(args, price, equity)?;
+        if signal != Signal::Buy {
+            return Ok(());
         }
-        Ok(())
+
+        let now_ms = Utc::now().timestamp_millis();
+        let period_ms = interval_millis(&args.interval).context("intervalo inválido")?;
+        let trade_signal = TradeSignal {
+            strategy_id: StrategyId::from("ema_crossover"),
+            market_id: MarketId::from(args.symbol.as_str()),
+            direction: Direction::Buy,
+            estimated_probability: None,
+            // A estratégia EMA do MVP não estima edge líquido; a política-base exige apenas >= 0.
+            expected_net_edge_bps: 0,
+            max_slippage_bps: args.slippage_bps,
+            signal_timestamp_ms: candle.close_time_ms,
+            expires_at_ms: candle
+                .close_time_ms
+                .saturating_add(period_ms.saturating_mul(2)),
+        };
+        let market = MarketSnapshot {
+            market_id: MarketId::from(args.symbol.as_str()),
+            price,
+            observed_at_ms: candle.close_time_ms,
+            quality: DataQuality::Valid,
+        };
+        let portfolio = PortfolioSnapshot {
+            equity,
+            cash: self.cash,
+            daily_start_equity: self.start_equity,
+            open_exposure: self.quantity * price,
+            has_open_position: self.has_position(),
+        };
+        match risk_engine.authorize_entry(RiskInput {
+            signal: &trade_signal,
+            market: &market,
+            portfolio: &portfolio,
+            now_ms,
+            kill_switch_active,
+            execution_slippage_bps: args.slippage_bps,
+        }) {
+            Ok(ticket) => self.open_position(args, ticket),
+            Err(reason) => {
+                self.record(
+                    "risk_rejected",
+                    &args.symbol,
+                    json!({"reason":reason.to_string(), "close":price.to_string()}),
+                )?;
+                warn!(reason=%reason, "entrada bloqueada pelo motor de risco");
+                Ok(())
+            }
+        }
     }
 
-    fn open_position(&mut self, args: &Args, market_price: Decimal, equity: Decimal) -> Result<()> {
-        if market_price <= Decimal::ZERO {
-            self.record(
-                "entry_rejected",
-                &args.symbol,
-                json!({"reason":"invalid_price"}),
-            )?;
-            return Ok(());
-        }
-        let slippage = Decimal::from(args.slippage_bps) / Decimal::from(10_000);
-        let fee_rate = Decimal::from(args.fee_bps) / Decimal::from(10_000);
-        let fill_price = market_price * (Decimal::ONE + slippage);
-        let risk_budget = equity * args.risk_per_trade;
-        let stop_market_price = fill_price * (Decimal::ONE - args.stop_loss);
-        let stop_fill_price = stop_market_price * (Decimal::ONE - slippage);
-        let risk_per_unit =
-            (fill_price - stop_fill_price) + (fill_price * fee_rate) + (stop_fill_price * fee_rate);
-        if risk_budget <= Decimal::ZERO || risk_per_unit <= Decimal::ZERO {
-            self.record(
-                "entry_rejected",
-                &args.symbol,
-                json!({"reason":"invalid_risk_parameters"}),
-            )?;
-            return Ok(());
-        }
-        let risk_sized_qty = risk_budget / risk_per_unit;
-        let allocation_qty = equity * args.max_allocation / fill_price;
-        let affordable_qty = self.cash / (fill_price * (Decimal::ONE + fee_rate));
-        let quantity = risk_sized_qty.min(allocation_qty).min(affordable_qty);
-        if quantity <= Decimal::ZERO {
-            self.record(
-                "entry_rejected",
-                &args.symbol,
-                json!({"reason":"insufficient_cash_or_zero_size"}),
-            )?;
-            return Ok(());
-        }
-        let notional = quantity * fill_price;
-        let fee = notional * fee_rate;
-        self.cash -= notional + fee;
-        self.quantity = quantity;
-        self.entry_price = Some(fill_price);
-        self.entry_fee = fee;
+    fn open_position(&mut self, args: &Args, ticket: ode_risk::EntryTicket) -> Result<()> {
+        let notional = ticket.quantity * ticket.fill_price;
+        self.cash -= notional + ticket.entry_fee;
+        self.quantity = ticket.quantity;
+        self.entry_price = Some(ticket.fill_price);
+        self.stop_price = Some(ticket.stop_price);
+        self.entry_fee = ticket.entry_fee;
+        self.entry_fee_bps = ticket.fee_bps;
+        self.position_slippage_bps = ticket.slippage_bps;
         self.record(
             "paper_order_filled",
             &args.symbol,
             json!({
-                "side":"buy", "quantity":quantity.to_string(),
-                "market_price":market_price.to_string(), "simulated_fill_price":fill_price.to_string(),
-                "fee":fee.to_string(), "risk_budget":risk_budget.to_string(),
-                "stop_price":(fill_price * (Decimal::ONE - args.stop_loss)).to_string(),
-                "execution_mode":"paper"
+                "side":"buy", "quantity":ticket.quantity.to_string(),
+                "simulated_fill_price":ticket.fill_price.to_string(),
+                "fee":ticket.entry_fee.to_string(), "risk_budget":ticket.risk_budget.to_string(),
+                "stop_price":ticket.stop_price.to_string(), "execution_mode":"paper"
             }),
         )?;
-        info!(quantity=%quantity, price=%fill_price, "compra simulada aberta; nenhuma ordem real foi enviada");
+        info!(quantity=%ticket.quantity, price=%ticket.fill_price, "compra simulada aberta; nenhuma ordem real foi enviada");
         Ok(())
     }
 
@@ -249,8 +245,8 @@ impl PaperBroker {
         if !self.has_position() || market_price <= Decimal::ZERO {
             return Ok(());
         }
-        let slippage = Decimal::from(args.slippage_bps) / Decimal::from(10_000);
-        let fee_rate = Decimal::from(args.fee_bps) / Decimal::from(10_000);
+        let slippage = Decimal::from(self.position_slippage_bps) / Decimal::from(10_000);
+        let fee_rate = Decimal::from(self.entry_fee_bps) / Decimal::from(10_000);
         let fill_price = market_price * (Decimal::ONE - slippage);
         let proceeds = self.quantity * fill_price;
         let exit_fee = proceeds * fee_rate;
@@ -261,7 +257,10 @@ impl PaperBroker {
         let closed_qty = self.quantity;
         self.quantity = Decimal::ZERO;
         self.entry_price = None;
+        self.stop_price = None;
         self.entry_fee = Decimal::ZERO;
+        self.entry_fee_bps = 0;
+        self.position_slippage_bps = 0;
         self.record(
             "paper_order_filled",
             &args.symbol,
@@ -287,20 +286,43 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.poll_seconds == 0 || args.starting_balance <= Decimal::ZERO {
         bail!("poll-seconds e starting-balance devem ser maiores que zero");
     }
-    for (name, value) in [
-        ("risk-per-trade", args.risk_per_trade),
-        ("max-daily-loss", args.max_daily_loss),
-        ("max-allocation", args.max_allocation),
-        ("stop-loss", args.stop_loss),
-    ] {
-        if value <= Decimal::ZERO || value >= Decimal::ONE {
-            bail!("{name} deve estar entre 0 e 1 (exclusivo)");
-        }
+    if args.risk_per_trade <= Decimal::ZERO
+        || args.risk_per_trade > Decimal::new(1, 1)
+        || args.max_daily_loss <= Decimal::ZERO
+        || args.max_daily_loss > Decimal::new(5, 1)
+        || args.max_allocation <= Decimal::ZERO
+        || args.max_allocation > Decimal::ONE
+        || args.stop_loss <= Decimal::ZERO
+        || args.stop_loss > Decimal::new(5, 1)
+    {
+        bail!(
+            "parâmetros de risco fora das barreiras obrigatórias do motor (risco/operação <=10%, perda diária/stop <=50%, alocação <=100%)"
+        );
     }
     if args.fee_bps > 1_000 || args.slippage_bps > 1_000 {
         bail!("fee-bps e slippage-bps não podem exceder 1000");
     }
     Ok(())
+}
+
+fn risk_engine(args: &Args, policy: RiskPolicy) -> Result<RiskEngine> {
+    let max_age = interval_millis(&args.interval)
+        .context("intervalo inválido")?
+        .saturating_mul(2);
+    RiskEngine::new(
+        RiskLimits {
+            risk_per_trade: args.risk_per_trade,
+            max_daily_loss: args.max_daily_loss,
+            max_allocation: args.max_allocation,
+            stop_loss: args.stop_loss,
+            fee_bps: args.fee_bps,
+            max_slippage_bps: args.slippage_bps,
+            min_expected_edge_bps: 0,
+            max_market_data_age_ms: max_age,
+        },
+        policy,
+    )
+    .context("política de risco inválida; fail-closed")
 }
 
 fn interval_millis(interval: &str) -> Option<i64> {
@@ -420,6 +442,19 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     validate_args(&args)?;
+    let kill_switch = KillSwitch::new(args.kill_switch_file.clone());
+    if let Some(reason) = args.activate_kill_switch.as_deref() {
+        let state = kill_switch.activate(reason, Utc::now().timestamp_millis())?;
+        info!(path=%kill_switch.path().display(), reason=%state.reason, "kill-switch persistido; novas entradas bloqueadas");
+        return Ok(());
+    }
+    let policy = RiskPolicy::from_path(&args.risk_overrides).with_context(|| {
+        format!(
+            "não foi possível carregar overrides em {}",
+            args.risk_overrides.display()
+        )
+    })?;
+    let risk_engine = risk_engine(&args, policy)?;
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(concat!(
@@ -437,12 +472,20 @@ async fn main() -> Result<()> {
         match fetch_candles(&client, &args).await {
             Ok(candles) => {
                 let latest = candles.last().expect("fetch valida candles não vazios");
+                // Consultar o latch em todo ciclo, mesmo quando ainda não há candle novo.
+                // Um arquivo ilegível/corrompido interrompe o processo: fail-closed.
+                let kill_active = kill_switch
+                    .is_active()
+                    .context("estado do kill-switch incerto; fail-closed")?;
+                if kill_active {
+                    warn!(path=%kill_switch.path().display(), "kill-switch persistente ativo; entradas bloqueadas");
+                }
                 if last_processed_close != Some(latest.close_time_ms) {
                     last_processed_close = Some(latest.close_time_ms);
                     if !is_fresh(latest, &args.interval) {
                         warn!(
                             candle_close_time_ms = latest.close_time_ms,
-                            "dados atrasados; nenhuma decisão de entrada será autorizada"
+                            "dados atrasados; nenhuma decisão será autorizada"
                         );
                         broker.record(
                             "stale_market_data",
@@ -451,7 +494,7 @@ async fn main() -> Result<()> {
                         )?;
                     } else {
                         let signal = compute_signal(&candles);
-                        broker.on_candle(&args, signal, latest)?;
+                        broker.on_candle(&args, signal, latest, &risk_engine, kill_active)?;
                     }
                 }
                 info!(close=%latest.close, equity=%broker.equity(latest.close), has_position=broker.has_position(),
@@ -487,9 +530,10 @@ mod tests {
     use super::*;
 
     fn candle(i: i64, close: Decimal) -> Candle {
+        let now = Utc::now().timestamp_millis();
         Candle {
-            open_time_ms: i * 60_000,
-            close_time_ms: i * 60_000 + 59_999,
+            open_time_ms: now - 60_000 + i,
+            close_time_ms: now,
             close,
         }
     }
@@ -506,8 +550,15 @@ mod tests {
             stop_loss: Decimal::new(2, 2),
             fee_bps: 10,
             slippage_bps: 5,
+            risk_overrides: PathBuf::from("configs/risk-overrides.example.toml"),
+            kill_switch_file: PathBuf::from("data/KILL_SWITCH.json"),
+            activate_kill_switch: None,
             once: true,
         }
+    }
+
+    fn test_engine(args: &Args) -> RiskEngine {
+        risk_engine(args, RiskPolicy::default()).unwrap()
     }
 
     #[test]
@@ -526,10 +577,13 @@ mod tests {
     #[test]
     fn paper_risk_sizing_respects_allocation_cap() {
         let args = test_args();
+        let engine = test_engine(&args);
         let mut broker =
             PaperBroker::new(Decimal::from(10_000), "/tmp/ode-test-audit.jsonl".into());
         let candle = candle(1, Decimal::from(100));
-        broker.on_candle(&args, Signal::Buy, &candle).unwrap();
+        broker
+            .on_candle(&args, Signal::Buy, &candle, &engine, false)
+            .unwrap();
         assert!(broker.has_position());
         let entry_price = broker.entry_price.unwrap();
         let exposure = broker.quantity * entry_price;
@@ -546,12 +600,36 @@ mod tests {
     #[test]
     fn daily_loss_gate_blocks_new_entries() {
         let args = test_args();
+        let engine = test_engine(&args);
         let mut broker =
             PaperBroker::new(Decimal::from(10_000), "/tmp/ode-test-audit.jsonl".into());
-        // A 3% drawdown on the mark-to-market equity trips the 2% daily guard.
         broker.cash = Decimal::from(9_700);
         broker
-            .on_candle(&args, Signal::Buy, &candle(2, Decimal::from(100)))
+            .on_candle(
+                &args,
+                Signal::Buy,
+                &candle(2, Decimal::from(100)),
+                &engine,
+                false,
+            )
+            .unwrap();
+        assert!(!broker.has_position());
+    }
+
+    #[test]
+    fn persistent_kill_switch_blocks_new_entries() {
+        let args = test_args();
+        let engine = test_engine(&args);
+        let mut broker =
+            PaperBroker::new(Decimal::from(10_000), "/tmp/ode-test-audit.jsonl".into());
+        broker
+            .on_candle(
+                &args,
+                Signal::Buy,
+                &candle(3, Decimal::from(100)),
+                &engine,
+                true,
+            )
             .unwrap();
         assert!(!broker.has_position());
     }

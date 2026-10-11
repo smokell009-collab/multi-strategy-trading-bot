@@ -1,0 +1,12 @@
+[package]
+name = "ode-events"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+ode-domain = { path = "../ode-domain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }

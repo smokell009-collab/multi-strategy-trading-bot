@@ -1,0 +1,11 @@
+# Overrides opcionais. Valores base continuam definidos pelas flags do bot.
+# 100 bps = 1%; parâmetros de proteção não podem ser zerados/desativados.
+
+[strategies.ema_crossover]
+risk_per_trade_bps = 100
+max_allocation_bps = 2500
+min_expected_edge_bps = 0
+max_market_data_age_ms = 120000
+
+[markets.BTCUSDT]
+max_slippage_bps = 10

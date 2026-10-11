@@ -19,28 +19,24 @@ Base organizada para um bot **multi-estratégia** em que o **Claude** (Claude De
 
 ```
 multi-strategy-trading-bot/
-├── README.md
-├── .gitignore
-├── .env.example                             # Modelo das variáveis de ambiente
-├── configs/claude_desktop_config.example.json   # Exemplo de config MCP
-├── docs/                                    # Guias de setup e arquitetura
-├── prompts/system-prompt-orquestrador.md    # System prompt do orquestrador
-├── scripts/install-mcps.sh                  # Comandos para instalar os MCPs
-└── resources/links-uteis.md                 # Links oficiais e community
+├── Cargo.toml / Cargo.lock              # Workspace Rust
+├── src/main.rs                          # Bot paper executável
+├── crates/                              # Domínio, eventos, risco e execução
+├── configs/                             # Exemplos de configuração
+├── docs/                                # Guias, arquitetura e segurança
+├── prompts/                             # Prompt do orquestrador
+└── .github/workflows/rust-ci.yml        # CI de workspace
 ```
 
 ## 🚀 Ordem recomendada de setup
 
 1. Leia [`docs/arquitetura.md`](docs/arquitetura.md)
 2. Rode [`scripts/install-mcps.sh`](scripts/install-mcps.sh)
-3. [Alpaca (paper)](docs/setup-alpaca.md)
-4. [TradingView](docs/setup-tradingview.md)
-5. [CCXT (testnet)](docs/setup-ccxt.md)
-6. [Polymarket (somente leitura no início)](docs/setup-polymarket.md)
-7. Copie `configs/claude_desktop_config.example.json` para o local de config do Claude e preencha as keys
-8. Copie `.env.example` para `.env` e preencha as variáveis
-9. Cole o conteúdo de [`prompts/system-prompt-orquestrador.md`](prompts/system-prompt-orquestrador.md) como instrução do projeto
-10. Rode **semanas** em paper antes de considerar capital real
+3. Consulte os guias de [Alpaca (paper)](docs/setup-alpaca.md), [TradingView](docs/setup-tradingview.md), [CCXT (testnet)](docs/setup-ccxt.md) e [Polymarket (somente leitura no início)](docs/setup-polymarket.md)
+4. Copie `configs/claude_desktop_config.example.json` para o local de config do Claude e preencha as keys
+5. Copie `.env.example` para `.env` e preencha as variáveis necessárias aos MCPs
+6. Cole o conteúdo de [`prompts/system-prompt-orquestrador.md`](prompts/system-prompt-orquestrador.md) como instrução do projeto
+7. Rode **semanas** em paper antes de considerar capital real
 
 ## 🔗 Links oficiais
 
@@ -56,6 +52,27 @@ multi-strategy-trading-bot/
 
 Lista completa (oficiais + community) em [`resources/links-uteis.md`](resources/links-uteis.md).
 
+## Bot Rust executável — Fase 1
+
+O primeiro MVP de **paper trading** consulta candles públicos da Binance, identifica cruzamentos EMA 9/21 e simula operações. Ele não envia ordens reais nem precisa de chaves privadas.
+
+```bash
+cargo run --release -- --symbol BTCUSDT --interval 1m --once
+```
+
+Para executar em loop, remova `--once`. O guia completo está em [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md). A configuração inicial ilustrativa está em [`configs/risk.paper.example.toml`](configs/risk.paper.example.toml).
+
+## Fase 2 — domínio e governança de risco
+
+O workspace separa os contratos em `crates/ode-domain`, `crates/ode-events`, `crates/ode-risk` e `crates/ode-execution`. O motor valida qualidade/idade de dados, validade do sinal, edge mínimo, slippage, posição aberta, perda diária, saldo e sizing; overrides por ativo/estratégia só podem **apertar** os limites-base. O kill-switch fica persistido em `data/KILL_SWITCH.json` e bloqueia entradas também após reinício.
+
+```bash
+cargo run --release -- --activate-kill-switch "pausa operacional"
+cargo test --workspace --locked
+```
+
+A ativação grava o latch e termina. Não existe flag de desativação no bot; o rearme exige revisão humana e remoção manual do arquivo por operador autorizado. `ode-execution` cobre idempotência/reconciliação em contratos testados, mas ainda não contém adaptador de exchange nem envia ordens reais. Detalhes: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md).
+
 ## ⚠️ Avisos importantes
 
 - **Paper trading / testnet primeiro. Sempre.**
@@ -63,21 +80,9 @@ Lista completa (oficiais + community) em [`resources/links-uteis.md`](resources/
 - Use keys com **permissão de saque desabilitada**.
 - LLMs podem errar, alucinar dados ou interpretar mal instruções. Mantenha supervisão humana.
 - Verifique a legislação do seu país (ex.: Polymarket tem restrições geográficas).
+- O bot Rust atual é um MVP educacional: não há backtest completo, execução real nem promessa de lucro. Saldo/posição simulados reiniciam a cada execução.
 - Resultados passados ou simulados não garantem resultados futuros.
 
 ## 📜 Créditos
 
-Criado com **Grok** + **Lovable**. Repositórios de terceiros pertencem aos seus respectivos autores.
-
-
-## Bot Rust executável — primeiro MVP
-
-O repositório agora inclui um bot funcional de **paper trading**: consulta candles públicos da Binance, identifica cruzamentos EMA 9/21, aplica dimensionamento e limites determinísticos de risco e registra auditoria local. Ele não envia ordens reais nem precisa de chaves privadas.
-
-```bash
-cargo run --release -- --symbol BTCUSDT --interval 1m --once
-```
-
-Para executar em loop, remova `--once`. Guia completo, parâmetros, limitações e comandos de teste: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md). Os critérios de risco estão em [`configs/risk.paper.example.toml`](configs/risk.paper.example.toml).
-
-> **Importante:** é um MVP educacional de simulação, não uma estratégia validada nem recomendação de investimento. Estado e saldo paper reiniciam a cada execução. Não há execução real habilitada. Não use capital real com base neste projeto.
+Criado com **Grok** + **Lovable**. Repositórios de terceiros pertencem aos respectivos autores.
