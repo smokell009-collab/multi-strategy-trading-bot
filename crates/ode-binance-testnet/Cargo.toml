@@ -1,0 +1,21 @@
+[package]
+name = "ode-binance-testnet"
+version = "0.1.0"
+edition = "2024"
+description = "Cliente REST exclusivo da Binance Spot Testnet"
+license = "MIT"
+
+[dependencies]
+hex = "0.4"
+hmac = "0.12"
+ode-domain = { path = "../ode-domain" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }

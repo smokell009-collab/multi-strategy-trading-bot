@@ -5,6 +5,7 @@ members = [
     "crates/ode-events",
     "crates/ode-risk",
     "crates/ode-execution",
+    "crates/ode-binance-testnet",
     "crates/ode-market-data",
     "crates/ode-strategy-technical",
     "crates/ode-backtest",
@@ -17,7 +18,7 @@ resolver = "3"
 name = "olho-de-deus"
 version = "0.2.0"
 edition = "2024"
-description = "Bot de trading em paper mode com replay, estratégia modular e motor de risco independente"
+description = "Bot paper com estratégia modular, motor de risco e adapter Binance Spot Testnet explícito"
 license = "MIT"
 
 [[bin]]
@@ -37,6 +38,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 ode-domain = { path = "crates/ode-domain" }
+ode-execution = { path = "crates/ode-execution" }
+ode-binance-testnet = { path = "crates/ode-binance-testnet" }
 ode-events = { path = "crates/ode-events" }
 ode-risk = { path = "crates/ode-risk" }
 ode-market-data = { path = "crates/ode-market-data" }

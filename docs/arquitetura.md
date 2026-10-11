@@ -53,3 +53,18 @@ O crate `ode-observability` não implementa execução de ordens. O dashboard é
 ## Recuperação da carteira paper
 
 `ode-observability` mantém um snapshot SQLite versionado por estratégia/par/intervalo. Ele inclui caixa, posição, preço/stop, custos, âncora diária UTC e último candle tratado. O estado e o evento de fill são confirmados numa única transação; snapshots incompatíveis ou inválidos interrompem a inicialização, sem reiniciar silenciosamente a carteira.
+
+
+## Fase 5 — execução manual Spot Testnet
+
+```text
+CLI testnet-* ──> preflight / ordem MARKET manual / reconcile
+                    │
+                    ├──> ode-risk (entrada buy) + filtros Spot + kill-switch
+                    ├──> ode-execution: SQLite intent/idempotência/lock por símbolo
+                    └──> ode-binance-testnet ──HTTPS/HMAC──> testnet.binance.vision
+
+Produção: sem host, credencial, flag ou caminho de execução no binário.
+```
+
+`ode-binance-testnet` tem URL-base constante para Spot Testnet, desativa redirects e sincroniza horário antes das requisições assinadas. A intenção é persistida antes do POST; resultado incerto vira estado não terminal e bloqueia nova ordem até reconciliação explícita por `clientOrderId`. O guard de mercado é transacional para processos concorrentes. Só há ordens `MARKET` manuais; não há integração automática da EMA, stop remoto ou execução em produção. Os testes usam mocks e não submetem ordens à exchange.
