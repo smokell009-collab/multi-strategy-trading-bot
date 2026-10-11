@@ -1,13 +1,12 @@
 {
-  "_comentario": "Copie para: macOS ~/Library/Application Support/Claude/claude_desktop_config.json | Windows %APPDATA%\\Claude\\claude_desktop_config.json. Substitua os valores SUA_..._AQUI. NUNCA faça commit do arquivo real.",
+  "_comentario": "ATENÇÃO: este arquivo é apenas um EXEMPLO. Copie-o para o local de configuração do Claude (macOS: ~/Library/Application Support/Claude/claude_desktop_config.json | Windows: %APPDATA%\\Claude\\claude_desktop_config.json), preencha suas chaves e NUNCA faça commit do arquivo real — ele já está no .gitignore.",
   "mcpServers": {
     "tradingview": {
-      "_comentario": "Ajuste conforme o README do MCP de TradingView escolhido (ver docs/setup-tradingview.md).",
-      "command": "uvx",
-      "args": ["tradingview-mcp-server"]
+      "_comentario": "MCP OFICIAL da TradingView: é um servidor remoto, basta informar a URL. Não usa command/args.",
+      "url": "https://mcp.tradingview.com/mcp"
     },
     "alpaca": {
-      "_comentario": "Keys PAPER em https://app.alpaca.markets (modo Paper). Mantenha ALPACA_PAPER_TRADE=true.",
+      "_comentario": "Ações e ETFs (EUA) em conta PAPER. Gere as chaves em https://app.alpaca.markets (modo Paper) e mantenha ALPACA_PAPER_TRADE=true.",
       "command": "uvx",
       "args": ["alpaca-mcp-server", "serve"],
       "env": {
@@ -17,7 +16,7 @@
       }
     },
     "ccxt": {
-      "_comentario": "Use keys de TESTNET e sem permissão de saque.",
+      "_comentario": "Cripto via CCXT (Binance, Bybit etc.). Use APENAS chaves de TESTNET, sem permissão de saque. SANDBOX=true ativa o modo de teste.",
       "command": "npx",
       "args": ["-y", "@mcpfun/mcp-server-ccxt"],
       "env": {
@@ -28,7 +27,7 @@
       }
     },
     "polymarket": {
-      "_comentario": "Comece somente leitura. Caminho do repo clonado via scripts/install-mcps.sh.",
+      "_comentario": "Mercados de previsão. Comece em modo SOMENTE LEITURA. Ajuste o caminho para onde você clonou o repositório (ver scripts/install-mcps.sh).",
       "command": "node",
       "args": ["/CAMINHO/ABSOLUTO/external/polymarket-agent-mcp/dist/index.js"]
     }
