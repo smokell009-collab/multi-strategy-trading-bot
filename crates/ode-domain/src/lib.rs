@@ -125,6 +125,7 @@ pub enum OrderSide {
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
     Pending,
+    Unknown,
     Open,
     PartiallyFilled,
     Filled,

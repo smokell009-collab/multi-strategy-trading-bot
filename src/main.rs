@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use ode_backtest::{BacktestConfig, run_out_of_sample};
 use ode_domain::{
     Candle, DataQuality, Direction, MarketId, MarketSnapshot, PaperPortfolioState,
@@ -28,6 +28,8 @@ use std::{
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+mod testnet_ops;
+
 const BINANCE_KLINES_URL: &str = "https://data-api.binance.vision/api/v3/klines";
 const KLINE_LIMIT: usize = 100;
 
@@ -35,11 +37,11 @@ const KLINE_LIMIT: usize = 100;
 #[command(
     name = "olho-de-deus",
     version,
-    about = "Bot de trading em paper mode; não envia ordens reais"
+    about = "Bot paper por padrão; execução explícita somente na Binance Spot Testnet"
 )]
 struct Args {
     /// Par Spot da Binance, por exemplo BTCUSDT.
-    #[arg(long, default_value = "BTCUSDT")]
+    #[arg(long, default_value = "BTCUSDT", global = true)]
     symbol: String,
     /// Intervalo de candles aceito pela Binance.
     #[arg(long, default_value = "1m")]
@@ -51,22 +53,22 @@ struct Args {
     #[arg(long, default_value = "10000")]
     starting_balance: Decimal,
     /// Fração do patrimônio arriscada por operação (0.01 = 1%).
-    #[arg(long, default_value = "0.01")]
+    #[arg(long, default_value = "0.01", global = true)]
     risk_per_trade: Decimal,
     /// Perda máxima diária em relação ao patrimônio no início do dia UTC (0.02 = 2%).
-    #[arg(long, default_value = "0.02")]
+    #[arg(long, default_value = "0.02", global = true)]
     max_daily_loss: Decimal,
     /// Teto de alocação por posição (0.25 = 25%).
-    #[arg(long, default_value = "0.25")]
+    #[arg(long, default_value = "0.25", global = true)]
     max_allocation: Decimal,
     /// Stop de proteção simulado (0.02 = 2%).
-    #[arg(long, default_value = "0.02")]
+    #[arg(long, default_value = "0.02", global = true)]
     stop_loss: Decimal,
     /// Taxa simulada em basis points; 10 = 0,10% por lado.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, global = true)]
     fee_bps: u32,
     /// Slippage simulado em basis points; 5 = 0,05%.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 5, global = true)]
     slippage_bps: u32,
     /// Arquivo TOML com parâmetros e interruptor da estratégia.
     #[arg(long, default_value = "configs/strategies.example.toml")]
@@ -93,10 +95,14 @@ struct Args {
     #[arg(long, default_value_t = false)]
     enable_ai_advisory: bool,
     /// Arquivo TOML com overrides por estratégia e por ativo.
-    #[arg(long, default_value = "configs/risk-overrides.example.toml")]
+    #[arg(
+        long,
+        default_value = "configs/risk-overrides.example.toml",
+        global = true
+    )]
     risk_overrides: PathBuf,
     /// Arquivo persistente do kill-switch. Se existir e for válido, bloqueia novas entradas.
-    #[arg(long, default_value = "data/KILL_SWITCH.json")]
+    #[arg(long, default_value = "data/KILL_SWITCH.json", global = true)]
     kill_switch_file: PathBuf,
     /// Ativa o kill-switch com o motivo informado e encerra; não há flag de desativação.
     #[arg(long)]
@@ -104,6 +110,41 @@ struct Args {
     /// Faz uma consulta e termina; útil para smoke tests.
     #[arg(long, default_value_t = false)]
     once: bool,
+    /// Banco SQLite separado para intents e reconciliação Spot Testnet.
+    #[arg(long, default_value = "data/testnet-orders.sqlite3", global = true)]
+    testnet_orders_db: PathBuf,
+    #[command(subcommand)]
+    testnet_command: Option<TestnetCommand>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum TestnetCommand {
+    /// Consulta horário, símbolo e conta; não envia ordens.
+    #[command(name = "testnet-preflight")]
+    Preflight,
+    /// Envia uma ordem MARKET somente à Spot Testnet, após todos os gates locais.
+    #[command(name = "testnet-place-market-order")]
+    PlaceMarketOrder {
+        #[arg(long, value_enum)]
+        side: TestnetSide,
+        #[arg(long)]
+        quantity: Decimal,
+        /// Deve ser exatamente BINANCE-SPOT-TESTNET para habilitar o POST de teste.
+        #[arg(long)]
+        confirm_testnet_order: String,
+    },
+    /// Consulta uma ordem já journaled pelo clientOrderId e reconcilia o estado.
+    #[command(name = "testnet-reconcile-order")]
+    ReconcileOrder {
+        #[arg(long)]
+        client_order_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TestnetSide {
+    Buy,
+    Sell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +518,7 @@ fn validate_args(args: &Args) -> Result<()> {
             "--enable-ai-advisory requer --dashboard e só executa após solicitação manual autenticada"
         );
     }
+    testnet_ops::validate_testnet_command(args)?;
     Ok(())
 }
 
@@ -637,6 +679,10 @@ async fn main() -> Result<()> {
     if let Some(reason) = args.activate_kill_switch.as_deref() {
         let state = kill_switch.activate(reason, Utc::now().timestamp_millis())?;
         info!(path=%kill_switch.path().display(), reason=%state.reason, "kill-switch persistido; novas entradas bloqueadas");
+        return Ok(());
+    }
+    if args.testnet_command.is_some() {
+        testnet_ops::execute(&args).await?;
         return Ok(());
     }
     let strategy_config =
@@ -919,6 +965,8 @@ mod tests {
             kill_switch_file: PathBuf::from("data/KILL_SWITCH.json"),
             activate_kill_switch: None,
             once: true,
+            testnet_orders_db: PathBuf::from("data/testnet-orders.sqlite3"),
+            testnet_command: None,
         }
     }
 

@@ -18,7 +18,7 @@
 - [x] Testes de propriedade para sizing e testes de falha, latch e dados inválidos.
 - [x] CI executa todos os crates.
 
-**Limite:** `ode-execution` ainda não possui adaptador de exchange e não envia ordens reais.
+**Limite:** nesta fase, `ode-execution` define contratos; o adaptador posterior só pode alcançar Spot Testnet, nunca a produção.
 
 ## Fase 3 — dados e estratégia
 
@@ -36,11 +36,13 @@
 
 **Limites:** o painel não é exposto à rede e não envia push/webhook; polling do navegador é local. O adaptador retorna apenas comentário textual e não controla sinais, risco ou execução. Execução real permanece fora de escopo.
 
-## Fase 5 — integração de execução (não implementada)
+## Fase 5 — execução restrita à Binance Spot Testnet
 
 - [x] Selecionar Binance Spot Testnet/BTCUSDT como alvo de desenvolvimento; jurisdição do operador permanece não informada e não é considerada validada.
-- [ ] Implementar e testar políticas de execução específicas do ambiente de teste.
-- [ ] Adaptador em sandbox/testnet, ciclo completo de ordem e reconciliação.
-- [ ] Revisão de segurança e autorização humana explícita antes de qualquer execução real.
+- [x] Cliente REST HMAC com host de Testnet fixo, relógio sincronizado, HTTPS obrigatório, sem redirects e sem possibilidade de trocar para produção.
+- [x] Validar permissões da conta, estado do símbolo e filtros de quantidade/notional antes de permitir uma ordem.
+- [x] `ode-execution` persiste intenção antes do POST, protege a idempotência, serializa uma ordem ativa por símbolo e guarda a âncora de risco diária UTC.
+- [x] Comandos explícitos de preflight somente leitura, ordem MARKET manual com confirmação textual, consulta/reconciliação e nenhuma repetição automática após resultado incerto.
+- [ ] Revisão de segurança e autorização humana antes de qualquer consideração de execução em produção; produção não faz parte desta fase.
 
-**Nenhuma fase futura é considerada concluída apenas por estar documentada. Execução real continua fora do escopo e não tem caminho de ativação no binário.**
+**Fase 5 implementa apenas ordens de teste. Execução real continua fora do escopo e não existe host, flag ou caminho de ativação de produção no binário. A jurisdição do operador segue não informada.**

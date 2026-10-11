@@ -131,7 +131,7 @@ O botão só envia uma solicitação após ação manual autenticada. O adaptado
 
 ## Arquitetura e testes
 
-Crates: `ode-domain` (tipos), `ode-market-data` (CSV, integridade e latência), `ode-strategy-technical` (EMA modular), `ode-backtest` (replay/holdout), `ode-events` (auditoria), `ode-risk` (autorização independente), `ode-execution` (contratos de idempotência/reconciliação, ainda sem adaptador de venue), `ode-observability` (SQLite/API/dashboard) e `ode-model-adapter` (comentário read-only opt-in).
+Crates: `ode-domain` (tipos), `ode-market-data` (CSV, integridade e latência), `ode-strategy-technical` (EMA modular), `ode-backtest` (replay/holdout), `ode-events` (auditoria), `ode-risk` (autorização independente), `ode-execution` (contratos, journal SQLite e idempotência/reconciliação), `ode-binance-testnet` (REST HMAC fixo à Spot Testnet), `ode-observability` (SQLite/API/dashboard) e `ode-model-adapter` (comentário read-only opt-in).
 
 ```bash
 cargo fmt --all -- --check
@@ -139,11 +139,41 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
+## Binance Spot Testnet — comandos manuais (Fase 5)
+
+O modo padrão continua sendo paper. Os subcomandos `testnet-*` são operações independentes, aceitam somente `BTCUSDT` nesta fase e usam exclusivamente `https://testnet.binance.vision/api`, fixo no código; não existe configuração para apontar à produção. O binário não carrega `.env` automaticamente. Use credenciais criadas no portal da [Binance Spot Testnet](https://testnet.binance.vision), com permissões mínimas, e exporte-as sem incluí-las no histórico do shell:
+
+```bash
+read -r -s -p "Spot Testnet API key: " BINANCE_API_KEY; export BINANCE_API_KEY; echo
+read -r -s -p "Spot Testnet secret: " BINANCE_SECRET; export BINANCE_SECRET; echo
+cargo run --release -- --symbol BTCUSDT testnet-preflight
+```
+
+O preflight verifica conectividade/horário, estado do símbolo, preço de referência e acesso à conta; **não envia ordens**. Para ordem de mercado, só prossiga depois de revisar esse resultado e os limites configurados:
+
+```bash
+cargo run --release -- --symbol BTCUSDT \
+  --risk-per-trade 0.01 --max-daily-loss 0.02 --max-allocation 0.25 \
+  testnet-place-market-order --side buy --quantity 0.0001 \
+  --confirm-testnet-order BINANCE-SPOT-TESTNET
+```
+
+O comando exige confirmação textual exata. Compras passam pelo `ode-risk`, saldo quote livre, kill-switch, âncora de perda diária UTC persistente, idade/qualidade do preço e filtros `LOT_SIZE`, `MARKET_LOT_SIZE`, `MIN_NOTIONAL`/`NOTIONAL`; vendas manuais só podem reduzir saldo base livre. A âncora e os limites são por BTCUSDT, sem agregação de risco entre ativos. As ordens são `MARKET`; não há stop remoto, loop de estratégia, acompanhamento contínuo ou caminho de produção. O journal padrão é `data/testnet-orders.sqlite3`.
+
+O journal registra `clientOrderId` antes do POST. Há no máximo uma ordem não terminal por símbolo, com exclusão mútua transacional no SQLite inclusive entre processos. Não há retry automático. **Não remova o arquivo nem mude `--testnet-orders-db` enquanto houver ordem pendente/incerta**: isso apaga o estado de idempotência local. Se uma resposta ficar incerta, **não repita o comando de ordem**; preserve o journal e use o ID apresentado para consultar/reconciliar:
+
+```bash
+cargo run --release -- --symbol BTCUSDT \
+  testnet-reconcile-order --client-order-id "SEU_CLIENT_ORDER_ID"
+```
+
+Os testes usam mocks locais e o vetor oficial de assinatura HMAC. Nenhuma ordem de Testnet ou produção foi enviada durante a implementação. Detalhes das fontes e do limite de escopo: [`phase-5-binance-testnet-scope.md`](phase-5-binance-testnet-scope.md).
+
 ## Limitações e segurança
 
 Saldo, posição paper, custos e cursor de candle são persistidos no SQLite; o latch e a auditoria também persistem. O sinal EMA usa edge esperado zero, não calibrado, e não representa vantagem estatística. Fills históricos e stops não reproduzem a fila de ordens, liquidez, taxas reais, funding ou latência de mercado. A métrica de recebimento só é tão confiável quanto os timestamps fornecidos. A perda diária usa início de sessão UTC e não substitui os controles de risco de uma venue.
 
-Não há execução real habilitada nem negociação em venue nesta etapa; o adaptador de Binance Spot Testnet está sendo construído na Fase 5. Futuros, DEX, integração Polymarket, notificações externas e IA autônoma seguem fora de escopo. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
+O executável suporta somente comandos manuais de negociação na Binance Spot Testnet; a ordem é enviada externamente ao ambiente de teste e não é um fill simulado local, mas isso não representa execução em produção. Não existe host/flag de produção e nenhum caminho envia ordem real. O comando `MARKET` não instala stop e não oferece saída automática. Futuros, DEX, integração Polymarket, notificações externas e IA autônoma seguem fora de escopo. O comentário de IA opcional não determina sinais nem risco. Mesmo um OOS histórico não valida rentabilidade futura. Não use capital real com base neste projeto.
 
 ## Referência do feed
 

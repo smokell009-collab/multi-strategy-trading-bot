@@ -13,7 +13,7 @@ Base organizada para um bot **multi-estratégia** em que o **Claude** (Claude De
 | Análise técnica | **TradingView** | Indicadores, screeners, sinais |
 | Mercados de previsão | **Polymarket** | Probabilidades de eventos (Gamma/CLOB/Data APIs) |
 | Ações e ETFs (EUA) | **Alpaca** | Execução em conta *paper* |
-| Cripto | **CCXT** (Binance, Bybit, etc.) | Dados e execução em **testnet** |
+| Cripto | Binance Spot Testnet (Rust) + conectores MCP/CCXT existentes | Dados públicos e ordens manuais somente em **testnet** |
 
 ## 🏗 Estrutura
 
@@ -71,7 +71,7 @@ cargo run --release -- --activate-kill-switch "pausa operacional"
 cargo test --workspace --locked
 ```
 
-A ativação grava o latch e termina. Não existe flag de desativação no bot; o rearme exige revisão humana e remoção manual do arquivo por operador autorizado. `ode-execution` cobre idempotência/reconciliação em contratos testados, mas ainda não contém adaptador de exchange nem envia ordens reais. Detalhes: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md).
+A ativação grava o latch e termina. Não existe flag de desativação no bot; o rearme exige revisão humana e remoção manual do arquivo por operador autorizado. `ode-execution` cobre idempotência/reconciliação; o adaptador adicionado na Fase 5 é fixo à Spot Testnet e não envia ordens de produção. Detalhes: [`docs/bot-paper-mvp.md`](docs/bot-paper-mvp.md).
 
 ## Fase 3 — dados e avaliação da estratégia
 
@@ -103,6 +103,40 @@ curl -H "Authorization: Bearer $ODE_DASHBOARD_TOKEN" \
 
 O adaptador de modelo é desligado por padrão. Para habilitá-lo, configure `ODE_MODEL_API_KEY` (e, se necessário, `ODE_MODEL_BASE_URL`/`ODE_MODEL_NAME`) e acrescente `--enable-ai-advisory`. A chamada só acontece quando solicitada manualmente na interface autenticada; o provedor recebe exclusivamente mercado, intervalo, preço, último sinal e saúde do feed. Não recebe saldo, posição, credenciais ou ordens; não tem ferramentas nem rota para controlar risco/execução. O resultado é texto consultivo e não é executado pelo bot. Consulte [o guia de operação](docs/bot-paper-mvp.md) para limites e segurança.
 
+## Fase 5 — execução manual somente na Binance Spot Testnet
+
+O executável Rust oferece três subcomandos, separados do modo paper: `testnet-preflight` (somente leitura), `testnet-place-market-order` (ordem `MARKET` após gates e confirmação textual exata) e `testnet-reconcile-order` (consulta de uma ordem já journaled). Esta fase aceita somente `BTCUSDT`; o host é constante (`testnet.binance.vision`) e nenhum argumento ou variável pode trocar o destino para produção. O código não possui caminho de execução real.
+
+Configure **chaves criadas no portal Spot Testnet**, sem saque e com permissões mínimas. O binário Rust não carrega `.env` automaticamente; solicite as credenciais sem ecoá-las no terminal:
+
+```bash
+read -r -s -p "Binance Spot Testnet API key: " BINANCE_API_KEY; export BINANCE_API_KEY; echo
+read -r -s -p "Binance Spot Testnet secret: " BINANCE_SECRET; export BINANCE_SECRET; echo
+cargo run --release -- --symbol BTCUSDT testnet-preflight
+```
+
+> Nesta sessão, a consulta pública sem autenticação ao horário retornou HTTP 451 por restrição de localização aplicada à sandbox. Isso não determina a elegibilidade do operador nem prova que sua conta/ambiente terá o mesmo resultado; o preflight autenticado não foi executado.
+
+Somente depois de revisar o resultado do preflight, um exemplo de envio de ordem **à Testnet** (operação externa em ambiente de teste, não simulação local) é:
+
+```bash
+cargo run --release -- --symbol BTCUSDT \
+  --risk-per-trade 0.01 --max-daily-loss 0.02 --max-allocation 0.25 \
+  testnet-place-market-order --side buy --quantity 0.0001 \
+  --confirm-testnet-order BINANCE-SPOT-TESTNET
+```
+
+O motor de risco limita **entradas de compra**; o tamanho é validado com preço de referência, saldo livre, taxas/slippage configurados, kill-switch, âncora diária UTC e filtros `LOT_SIZE`/`MARKET_LOT_SIZE`/notional da exchange. Os limites e a âncora são específicos de BTCUSDT, não agregam outros ativos/mercados. Venda manual serve para reduzir posição. O subcomando não acompanha estratégia, não instala stop na venue e não é um bot autônomo de produção. Estado de ordens e âncora diária ficam em `data/testnet-orders.sqlite3` por padrão.
+
+Se a resposta do POST ou a consulta ficar incerta, **não execute o comando de ordem novamente**. Use o `client_order_id` mostrado no resultado para reconciliar:
+
+```bash
+cargo run --release -- --symbol BTCUSDT \
+  testnet-reconcile-order --client-order-id "SEU_CLIENT_ORDER_ID"
+```
+
+O journal grava a intenção antes do POST, impede reenvio idempotente, bloqueia novas ordens no mesmo símbolo enquanto houver estado `pending/open/partially_filled/unknown` e serializa essa exclusão mútua no SQLite. **Não apague nem troque o arquivo do journal** enquanto houver ordem pendente/incerta; isso removeria a proteção local contra duplicação. O cliente não faz retry automático. O desenvolvimento foi validado com mocks; nenhuma ordem Testnet ou real foi enviada durante esta implementação. Veja o [escopo e as limitações da Fase 5](docs/phase-5-binance-testnet-scope.md).
+
 ## ⚠️ Avisos importantes
 
 - **Paper trading / testnet primeiro. Sempre.**
@@ -110,7 +144,7 @@ O adaptador de modelo é desligado por padrão. Para habilitá-lo, configure `OD
 - Use keys com **permissão de saque desabilitada**.
 - LLMs podem errar, alucinar dados ou interpretar mal instruções. Mantenha supervisão humana.
 - Verifique a legislação do seu país (ex.: Polymarket tem restrições geográficas).
-- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução real nem promessa de lucro. A carteira paper e o cursor de candles são persistidos no SQLite e restaurados após reinício. O dashboard é local e não envia notificações externas.
+- O bot Rust atual é um MVP educacional: o backtest é um holdout simples, sem otimização ou inferência estatística; não há execução em produção nem promessa de lucro. A execução de exchange disponível é manual e restrita à Binance Spot Testnet. A carteira paper e o cursor de candles são persistidos no SQLite e restaurados após reinício. O dashboard é local e não envia notificações externas.
 - Resultados passados ou simulados não garantem resultados futuros.
 
 ## 📜 Créditos

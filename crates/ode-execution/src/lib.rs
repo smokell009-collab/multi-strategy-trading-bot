@@ -1,8 +1,14 @@
 use ode_domain::{MarketId, OrderSide, OrderStatus};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq)]
+mod sqlite_journal;
+pub use sqlite_journal::{JournalError, PersistedOrder, SqliteOrderJournal};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OrderIntent {
     pub client_order_id: String,
     pub market_id: MarketId,
@@ -33,10 +39,15 @@ pub enum RegisterOutcome {
     Duplicate,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RegisterError {
+    #[error("client order ID vazio")]
     EmptyClientOrderId,
+    #[error("client order ID fora do formato suportado")]
+    InvalidClientOrderId,
+    #[error("quantidade inválida")]
     InvalidQuantity,
+    #[error("client order ID reutilizado com payload diferente")]
     IdempotencyConflict,
 }
 
