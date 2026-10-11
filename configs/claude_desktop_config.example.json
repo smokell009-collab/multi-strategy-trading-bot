@@ -1,0 +1,36 @@
+{
+  "_comentario": "Copie para: macOS ~/Library/Application Support/Claude/claude_desktop_config.json | Windows %APPDATA%\\Claude\\claude_desktop_config.json. Substitua os valores SUA_..._AQUI. NUNCA faça commit do arquivo real.",
+  "mcpServers": {
+    "tradingview": {
+      "_comentario": "Ajuste conforme o README do MCP de TradingView escolhido (ver docs/setup-tradingview.md).",
+      "command": "uvx",
+      "args": ["tradingview-mcp-server"]
+    },
+    "alpaca": {
+      "_comentario": "Keys PAPER em https://app.alpaca.markets (modo Paper). Mantenha ALPACA_PAPER_TRADE=true.",
+      "command": "uvx",
+      "args": ["alpaca-mcp-server", "serve"],
+      "env": {
+        "ALPACA_API_KEY": "SUA_ALPACA_PAPER_KEY_AQUI",
+        "ALPACA_SECRET_KEY": "SUA_ALPACA_PAPER_SECRET_AQUI",
+        "ALPACA_PAPER_TRADE": "true"
+      }
+    },
+    "ccxt": {
+      "_comentario": "Use keys de TESTNET e sem permissão de saque.",
+      "command": "npx",
+      "args": ["-y", "@mcpfun/mcp-server-ccxt"],
+      "env": {
+        "BINANCE_API_KEY": "SUA_BINANCE_TESTNET_KEY_AQUI",
+        "BINANCE_SECRET": "SUA_BINANCE_TESTNET_SECRET_AQUI",
+        "DEFAULT_EXCHANGE": "binance",
+        "SANDBOX": "true"
+      }
+    },
+    "polymarket": {
+      "_comentario": "Comece somente leitura. Caminho do repo clonado via scripts/install-mcps.sh.",
+      "command": "node",
+      "args": ["/CAMINHO/ABSOLUTO/external/polymarket-agent-mcp/dist/index.js"]
+    }
+  }
+}
